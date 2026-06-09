@@ -6,7 +6,7 @@
 
 판정은 하이브리드 단일 사이클입니다.
 로컬 LLM이 1차로 넓게 판정(recall)하고, alert 시 OpenAI가 2차로 정밀 검증(precision)해
-최종 확정합니다. 자세한 흐름은 `PROJECT_HISTORY.md`를 참고하세요.
+최종 확정합니다. 자세한 흐름은 `docs/PROJECT_HISTORY.md`를 참고하세요.
 
 ---
 
@@ -20,11 +20,7 @@ Python 3.11 권장
 
 ### 2. 의존성 설치
 ```bash
-# 운영 실행만 필요한 경우
 pip install -r requirements.txt
-
-# 시각화·테스트 등 부가 도구까지 필요한 경우
-pip install -r requirements-dev.txt
 ```
 
 ### 3. `.env` 설정
@@ -58,15 +54,17 @@ python main.py
 python main.py --once
 ```
 
-### 5. 테스트
-```bash
-# 단일 사이클 시나리오 매트릭스
-python test_all_cases.py
+### 5. 테스트/검증
+```powershell
+# 과거 run을 재구성해 하이브리드(1차 로컬 → 2차 OpenAI)로 재실행
+.venv\Scripts\python.exe tools\test_hybrid_replay.py
 
-# 두 사이클 is_new 시나리오
-python test_two_cycle.py
+# 특정 run만 / 반복 횟수 지정
+$env:REPLAY_ONLY='20260604_011503'; $env:REPLAY_ROUNDS='3'; .venv\Scripts\python.exe tools\test_hybrid_replay.py
+
+# 테스트 입력 메시지를 원문 그대로 조회
+.venv\Scripts\python.exe tools\show_test_messages.py [run_id]
 ```
-자세한 옵션은 `docs/TEST_COMMANDS.md`를 참고하세요.
 
 ### 6. 재부팅 시 자동 실행
 
@@ -112,7 +110,8 @@ powershell -ExecutionPolicy Bypass -File start_monitor.ps1
 
 ## 참고 문서
 
-- `PROJECT_HISTORY.md` — 변경 이력과 의사결정 기록
+- `docs/PROJECT_HISTORY.md` — 변경 이력과 의사결정 기록
 - `docs/PROMPT_DRAFT_CRITICAL_ALERT.md` — 프롬프트 초안 및 카테고리 정의
 - `docs/SLACK_INTERACTIONS.md` — Slack interactivity(음소거 등) 운영 가이드
-- `docs/TEST_COMMANDS.md` — 테스트 실행 옵션 모음
+- `tools/test_hybrid_replay.py` · `tools/show_test_messages.py` — 검증/조회 도구
+- `issue_keywords.txt` — 1차 키워드 게이트용 키워드 목록(편집 가능)

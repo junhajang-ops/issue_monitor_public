@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 from parsers.kakao_parser import parse_kakao_file
 from parsers.ingame_parser import parse_ingame_file
@@ -130,7 +130,7 @@ def main() -> None:
         targets = [r for r in RUNS if any(k in r for k in keys)]
     else:
         targets = list(RUNS)
-    conn = sqlite3.connect("data/issue_monitor.sqlite3")
+    conn = sqlite3.connect(str(config.DB_PATH))
     conn.row_factory = sqlite3.Row
     for rid in targets:
         r = conn.execute(

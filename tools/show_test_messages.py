@@ -11,12 +11,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # 프로젝트 루트(config 등)
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # tools(test_hybrid_replay)
+import config
 from test_hybrid_replay import reconstruct, RUNS
 
 
 def show(rid: str) -> None:
-    conn = sqlite3.connect("data/issue_monitor.sqlite3")
+    conn = sqlite3.connect(str(config.DB_PATH))
     conn.row_factory = sqlite3.Row
     r = conn.execute(
         "SELECT context_window_start, window_end, message_count "
