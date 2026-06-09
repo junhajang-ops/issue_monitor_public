@@ -80,7 +80,8 @@ powershell -ExecutionPolicy Bypass -File start_monitor.ps1
 ```
 
 **주의**
-- 카카오 앱플레이어와 cloudflared(Slack 음소거)는 자동 실행에 **미포함** (수동 시작/보류).
+- 카카오 앱플레이어는 **앱플레이어 자체 설정으로 자동 실행**됩니다(부팅 시 자동 기동).
+- Slack 음소거 상호작용은 **Socket Mode(웹소켓)**로 동작하여 cloudflared/공개 URL이 **불필요**합니다(기존 cloudflared 터널 방식 대체).
 - playwright는 `chrome_profile` 로그인 세션이 유효해야 무인 수집됩니다. 만료 시 `first_login.py`로 재로그인하세요.
 
 ---

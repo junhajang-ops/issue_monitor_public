@@ -8,6 +8,7 @@
 
 실행: (.venv) python test_hybrid_replay.py
 """
+import os
 import sqlite3
 import json
 import sys
@@ -122,9 +123,16 @@ def reconstruct(rid: str, cws: str, we: str):
 
 
 def main() -> None:
+    # REPLAY_ONLY="144917,011503" 처럼 일부 run만 대상으로 필터(부분 문자열 매칭). 미설정 시 전체.
+    only = os.getenv("REPLAY_ONLY", "").strip()
+    if only:
+        keys = [k.strip() for k in only.split(",") if k.strip()]
+        targets = [r for r in RUNS if any(k in r for k in keys)]
+    else:
+        targets = list(RUNS)
     conn = sqlite3.connect("data/issue_monitor.sqlite3")
     conn.row_factory = sqlite3.Row
-    for rid in RUNS:
+    for rid in targets:
         r = conn.execute(
             "SELECT context_window_start, window_end, message_count "
             "FROM local_llm_runs WHERE run_id=?",
@@ -209,4 +217,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    rounds = int(os.getenv("REPLAY_ROUNDS", "1"))
+    for _r in range(1, rounds + 1):
+        if rounds > 1:
+            print(f"\n{'#' * 78}\n# ROUND {_r}/{rounds}\n{'#' * 78}", flush=True)
+        main()
