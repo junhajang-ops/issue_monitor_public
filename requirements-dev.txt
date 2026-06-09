@@ -1,0 +1,12 @@
+# Development-only dependencies.
+# 운영 의존성은 requirements.txt에 두고, 단위 테스트·시각화 같은 부가 도구는
+# 여기에 모아 둔다. CI 환경에서는 `pip install -r requirements-dev.txt`만 호출하면 된다.
+-r requirements.txt
+
+# 시각화 (sleep_sec 등 운영 분석 노트용). 사용 시 주석 해제 후 버전 고정.
+# matplotlib~=3.10.0
+# numpy~=2.3.0
+
+# P3-2에서 도입 예정인 자동 테스트 의존성.
+# pytest~=8.3.0
+# freezegun~=1.5.0

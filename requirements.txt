@@ -1,0 +1,8 @@
+# Runtime dependencies for issue_monitor.
+# `~=` 으로 마이너 버전까지 호환 범위를 잠가, 검증된 동작이 갑작스러운
+# 메이저 업그레이드로 깨지지 않도록 한다. 최초 검증 버전은 2026-05-21 기준이다.
+python-dotenv~=1.2.2
+requests~=2.34.0
+tzdata~=2026.2
+# Slack Socket Mode(WebSocket) 상호작용 수신용. public URL/cloudflared 불필요.
+slack_sdk~=3.42.0

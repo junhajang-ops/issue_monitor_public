@@ -1,0 +1,17 @@
+.env
+.venv/
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+data/slack_state.json
+local_llm_runs/
+__pycache__/
+*.pyc
+data/snapshots/
+data/logs/
+.claude/
+*_out.txt
+*.png
+check0117.py
+data/sleep_data.json
+새 텍스트 문서.txt
