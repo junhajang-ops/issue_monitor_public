@@ -48,6 +48,18 @@ def get_field(obj: Any, name: str, default: Any = None) -> Any:
     return getattr(obj, name, default)
 
 
+def _is_new_row(row: Any) -> bool:
+    """recent_rows의 메시지가 신규(is_new=1)인지.
+
+    fetch_messages_since가 timestamp >= NEW_WINDOW_MINUTES 기준으로 부여한 컬럼이다.
+    sqlite Row는 키 접근(row["is_new"]), dict는 .get으로 읽는다.
+    """
+    try:
+        return bool(int(row["is_new"]))
+    except (KeyError, IndexError, TypeError, ValueError):
+        return bool(get_field(row, "is_new", 0))
+
+
 def print_source_counts(messages: list[Any]) -> None:
     counter: Counter[str] = Counter()
     for message in messages:
@@ -197,10 +209,17 @@ def run_cycle() -> float:
         parsed = judge_result.parsed_response or {}
         should_alert = bool(parsed.get("should_alert", False))
         current_category = _parse_alert_category(parsed)
-        # 키워드 게이트: 이슈 키워드를 서로 다른 2명 이상이 언급하면 9B 판정과 무관하게
-        # 2차로 넘긴다(recall 최우선). 2차(precision)가 오탐을 거른다.
-        keyword_sender_count = issue_candidate_sender_count(recent_rows)
-        keyword_gate = keyword_sender_count >= 2
+        # 키워드 게이트: 확인된 이슈 키워드가 '신규(is_new)' 메시지에 하나라도 있으면
+        # 9B 판정과 무관하게 2차로 넘긴다(recall). 키워드 후보가 모두 이전 사이클에
+        # 본 메시지(is_new=0)면 게이트 미통과 → 같은 신고 중복 2차 호출/발송 방지.
+        # (로컬 9B should_alert 경로는 기존 동작 그대로 유지)
+        _issue_cands = detect_issue_candidates(recent_rows)
+        keyword_sender_count = len({s for _, s in _issue_cands if s})
+        _issue_cand_idx = {i for i, _ in _issue_cands}
+        keyword_gate = any(
+            (i in _issue_cand_idx) and _is_new_row(row)
+            for i, row in enumerate(recent_rows, start=1)
+        )
         print_llm_response(display_text, should_alert=should_alert)
         print(
             f"[LLM] status={judge_result.status}, "
