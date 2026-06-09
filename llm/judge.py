@@ -279,7 +279,8 @@ JUDGE_TASK_REMINDER = """
 
 
 # 1차 recall 보강용 이슈 키워드(서버/접속·결제·계정/운영). 입력에서 신호를 강조하기 위함.
-ISSUE_KEYWORDS = (
+# 내장 기본값. config.ISSUE_KEYWORDS_FILE이 있으면 그 파일로 덮어쓴다(_load_issue_keywords).
+_DEFAULT_ISSUE_KEYWORDS = (
     # 서버/접속 장애
     "튕김", "튕겨", "튕기", "팅겨", "팅김", "팅기", "렉", "꺼짐", "꺼져", "꺼진",
     "접속", "로그인", "로딩", "크래시", "멈춤", "멈춰", "끊김", "끊겨", "재접속",
@@ -292,6 +293,31 @@ ISSUE_KEYWORDS = (
     # "핵"은 "탄핵"·"핵심" 등 오탐이 커서 치팅 맥락 패턴으로 한정
     "매크로", "핵쟁이", "핵유저", "핵썼", "핵쓰", "핵있", "핵임", "불법프로그램", "비정상",
 )
+
+
+def _load_issue_keywords() -> tuple[str, ...]:
+    """config.ISSUE_KEYWORDS_FILE에서 키워드를 로드한다.
+
+    - 한 줄에 키워드 하나, '#'로 시작하는 줄과 빈 줄은 무시.
+    - 파일이 없거나 비어 있으면 내장 기본값(_DEFAULT_ISSUE_KEYWORDS)을 사용.
+    """
+    path = getattr(config, "ISSUE_KEYWORDS_FILE", None)
+    try:
+        if path is not None and path.exists():
+            kws: list[str] = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                kws.append(line)
+            if kws:
+                return tuple(dict.fromkeys(kws))  # 순서 유지 + 중복 제거
+    except Exception:
+        pass
+    return _DEFAULT_ISSUE_KEYWORDS
+
+
+ISSUE_KEYWORDS = _load_issue_keywords()
 
 
 def detect_issue_candidates(messages: Iterable[Any]) -> list[tuple[int, str]]:

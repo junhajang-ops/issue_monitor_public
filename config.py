@@ -112,6 +112,16 @@ INGAME_SOURCES = [
 ]
 
 # =========================
+# 이슈 키워드 게이트
+# =========================
+
+# 1차 키워드 게이트용 키워드 목록 파일(한 줄에 하나, '#'로 시작하면 주석, 빈 줄 무시).
+# 파일이 없거나 비어 있으면 judge.py 내장 기본값을 사용한다. 수정 후 재시작 시 반영.
+ISSUE_KEYWORDS_FILE = Path(
+    os.getenv("ISSUE_KEYWORDS_FILE", str(BASE_DIR / "issue_keywords.txt"))
+)
+
+# =========================
 # Local LLM (llama.cpp) 설정
 # =========================
 
