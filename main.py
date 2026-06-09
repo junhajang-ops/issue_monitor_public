@@ -39,6 +39,7 @@ from storage.db import (
     init_db,
     insert_local_llm_run,
     insert_messages,
+    prune_db_runs_older_than,
     prune_messages_older_than,
 )
 
@@ -182,6 +183,8 @@ def run_cycle() -> float:
             first_seen_at=first_seen_at,
         )
         pruned_count = prune_messages_older_than(conn, db_cutoff_iso)
+        runs_cutoff_iso = to_iso_kst(now - timedelta(days=config.DB_RETENTION_DAYS))
+        pruned_runs = prune_db_runs_older_than(conn, runs_cutoff_iso)
         recent_rows = fetch_messages_since(conn, db_cutoff_iso, new_window_cutoff_iso)
         total_count = count_messages(conn)
 
@@ -192,6 +195,7 @@ def run_cycle() -> float:
     )
     print(f"[DB] inserted_messages={inserted_count}")
     print(f"[DB] pruned_messages={pruned_count}")
+    print(f"[DB] pruned_llm_runs={pruned_runs} (retention {config.DB_RETENTION_DAYS}일)")
     print(f"[DB] total_messages={total_count}")
 
     if config.LLM_JUDGE_ENABLED:

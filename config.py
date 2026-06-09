@@ -56,6 +56,11 @@ DB_MESSAGE_RETENTION_MINUTES = int(
     os.getenv("DB_MESSAGE_RETENTION_MINUTES", str(CONTEXT_WINDOW_MINUTES))
 )
 
+# 판정 이력·알림 테이블(local_llm_runs/cloud_llm_runs/alerts/issue_states) 보관 일수.
+# 이 일수가 지난 행은 매 사이클 prune된다. messages(채팅 working set)는 위
+# DB_MESSAGE_RETENTION_MINUTES(분)로 별도 관리되며, 채팅 원본은 외부에 보존된다.
+DB_RETENTION_DAYS = int(os.getenv("DB_RETENTION_DAYS", "30"))
+
 # =========================
 # 원본 소스 경로
 # =========================

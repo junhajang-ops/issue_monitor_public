@@ -182,6 +182,34 @@ def prune_messages_older_than(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     return conn.total_changes - before
 
 
+# 판정 이력·알림 테이블의 (테이블, 시간 컬럼) 매핑. created_at/sent_at/last_seen_at 기준.
+_DB_RETENTION_TABLES = (
+    ("local_llm_runs", "created_at"),
+    ("cloud_llm_runs", "created_at"),
+    ("alerts", "sent_at"),
+    ("issue_states", "last_seen_at"),
+)
+
+
+def prune_db_runs_older_than(conn: sqlite3.Connection, cutoff_iso: str) -> int:
+    """판정 이력·알림 테이블에서 보관 기한(cutoff)보다 오래된 행을 삭제한다.
+
+    - local_llm_runs/cloud_llm_runs: created_at, alerts: sent_at, issue_states: last_seen_at 기준.
+    - messages는 working set이라 별도(prune_messages_older_than)로 관리한다.
+    - SQLite는 DELETE 후 파일이 자동 축소되지 않지만, retention이 일정하면 빈 공간이
+      재사용되어 파일 크기가 평형을 이룬다(즉시 축소가 필요하면 VACUUM 수동 실행).
+    """
+    before = conn.total_changes
+    for table, col in _DB_RETENTION_TABLES:
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE {col} < ?", (cutoff_iso,))
+        except sqlite3.Error:
+            # 테이블/컬럼이 없으면 건너뛴다(스키마 변형 안전성).
+            continue
+    conn.commit()
+    return conn.total_changes - before
+
+
 def fetch_messages_since(
     conn: sqlite3.Connection,
     cutoff_iso: str,
