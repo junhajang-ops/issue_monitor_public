@@ -4,9 +4,9 @@
 로컬 LLM(Qwen 계열)에게 운영 알림 대상 이슈 여부를 판정시키고, 필요 시 Slack으로
 알림을 발송하는 파이프라인입니다.
 
-판정 정책은 두 사이클 is_new 기준입니다.
-한 사이클에서 [계정/운영 리스크] 카테고리가 감지되면 다음 사이클에 신규 evidence가
-있어야 알림을 확정합니다. 자세한 흐름은 `PROJECT_HISTORY.md`를 참고하세요.
+판정은 하이브리드 단일 사이클입니다.
+로컬 LLM이 1차로 넓게 판정(recall)하고, alert 시 OpenAI가 2차로 정밀 검증(precision)해
+최종 확정합니다. 자세한 흐름은 `PROJECT_HISTORY.md`를 참고하세요.
 
 ---
 
@@ -28,13 +28,18 @@ pip install -r requirements-dev.txt
 ```
 
 ### 3. `.env` 설정
-프로젝트 루트에 `.env` 파일을 두고 다음 항목을 채웁니다.
+`.env.example`을 복사해 `.env`를 만들고, `<your-...-here>` 자리의 키를 실제 값으로 채웁니다.
+```bash
+cp .env.example .env                 # Windows PowerShell: Copy-Item .env.example .env
+```
+주요 항목:
 
 | 항목 | 설명 |
 |------|------|
 | `KAKAO_BASE_DIR` | 카카오톡 로그 루트 경로 |
 | `INGAME_BASE_DIR` | 인게임 채팅 로그 루트 경로 |
-| `LOCAL_LLM_ENDPOINT` | Ollama 등 로컬 LLM 엔드포인트 (예: `http://localhost:11434`) |
+| `LOCAL_LLM_ENDPOINT` | 로컬 LLM(llama.cpp) 엔드포인트 (예: `http://localhost:8080`) |
+| `OPENAI_API_KEY` | 2차 검증용 OpenAI API 키 (`VERIFY_ENABLED=1`일 때 필요) |
 | `LOCAL_LLM_MODEL` | 로컬 LLM 모델 이름 |
 | `LLM_TIMEOUT_SEC` | LLM 요청 타임아웃 초 (기본 180) |
 | `SLACK_BOT_TOKEN` | Slack bot 토큰 (없으면 Webhook으로 폴백) |

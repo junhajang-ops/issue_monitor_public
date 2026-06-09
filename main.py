@@ -91,6 +91,43 @@ def _verify_under_daily_limit(now: datetime) -> bool:
     return int(n or 0) < limit
 
 
+def _verify_log(
+    *,
+    called: bool,
+    route: str,
+    status: str,
+    confirmed: bool | None,
+    detail: str,
+) -> None:
+    """2차(클라우드) 검증 흐름을 색상으로 강조 기록.
+
+    - LLM_RESPONSE_GREEN_OUTPUT=1이면 초록으로 강조한다.
+    - 2차 confirmed=True(=Slack 발송)면 결과·응답 줄을 빨강으로 표시한다.
+    - 기록 항목: ① 2차 호출 여부 ② 호출 경로(1차 9B alert vs 키워드 게이트 강제) ③ 2차 응답.
+    """
+    on = config.LLM_RESPONSE_GREEN_OUTPUT
+    esc = chr(27)
+    green, red, reset = esc + "[92m", esc + "[91m", esc + "[0m"
+    bar = "=" * 80
+
+    def _ln(text: str, is_red: bool = False) -> None:
+        if on:
+            print(f"{red if is_red else green}{text}{reset}")
+        else:
+            print(text)
+
+    _ln(bar)
+    _ln(f"[2차 검증] {'호출됨' if called else '미호출'} | 경로: {route} | status={status}")
+    if confirmed is not None:
+        _ln(
+            f"[2차 결과] confirmed={confirmed} → {'발송' if confirmed else '차단'}",
+            is_red=bool(confirmed),
+        )
+    if detail:
+        _ln(f"[2차 응답] {detail}", is_red=bool(confirmed))
+    _ln(bar)
+
+
 def run_cycle() -> float:
     cycle_started = time.perf_counter()
     now = datetime.now(KST)
@@ -207,13 +244,17 @@ def run_cycle() -> float:
             slack_should_alert = False
             has_possible_issue_override = False
             decision_note = f"llm_not_ok_{judge_result.status}"
-            print(f"[VERIFY] suppressed by non-ok LLM status: status={judge_result.status}")
+            _verify_log(
+                called=False, route="-", status=f"1차 비정상({judge_result.status})",
+                confirmed=None, detail="1차 LLM 응답이 비정상이라 2차 미호출, 차단",
+            )
         elif should_alert or keyword_gate:
-            if not should_alert and keyword_gate:
-                print(
-                    f"[VERIFY] keyword gate activated: {keyword_sender_count} senders with "
-                    f"issue keywords (9B should_alert=false) → forwarding to 2차"
-                )
+            # 호출 경로: 1차 9B가 직접 alert인지, 9B는 false인데 키워드 게이트로 강제 전달인지.
+            route = (
+                "1차 로컬(9B) alert"
+                if should_alert
+                else f"키워드 게이트 강제(9B=false, 이슈키워드 {keyword_sender_count}명)"
+            )
             if config.VERIFY_ENABLED and _verify_under_daily_limit(now):
                 cloud_verify = verify_alert_cloud(recent_rows, current_category, slack_content)
                 cv_status = cloud_verify.get("status")
@@ -225,9 +266,9 @@ def run_cycle() -> float:
                         slack_content = str(cloud_verify.get("reason") or slack_content)
                         slack_should_alert = True
                         decision_note = "cloud_confirmed_via_keyword_gate"
-                    print(
-                        f"[VERIFY] status=ok confirmed={cloud_verify.get('confirmed')} "
-                        f"reason={str(cloud_verify.get('reason'))[:80]}"
+                    _verify_log(
+                        called=True, route=route, status="ok",
+                        confirmed=send_slack, detail=str(cloud_verify.get("reason") or ""),
                     )
                 else:
                     # 2차 장애/키없음/파싱실패 → 로컬 판정대로 발송(recall 우선).
@@ -236,9 +277,9 @@ def run_cycle() -> float:
                     if not should_alert:
                         slack_should_alert = True
                         decision_note = f"cloud_fallback_{cv_status}_keyword_gate"
-                    print(
-                        f"[VERIFY] cloud not ok ({cv_status}: {str(cloud_verify.get('error'))[:120]}); "
-                        f"fallback to local alert"
+                    _verify_log(
+                        called=True, route=route, status=cv_status, confirmed=None,
+                        detail=f"2차 장애 → 1차 판정대로 발송(fallback): {str(cloud_verify.get('error'))[:160]}",
                     )
             else:
                 # 검증 비활성 또는 일일 상한 초과 → 로컬 판정대로.
@@ -246,10 +287,17 @@ def run_cycle() -> float:
                 decision_note = "verify_disabled_or_daily_limit"
                 if not should_alert:
                     slack_should_alert = True
-                print("[VERIFY] disabled or daily limit reached; sending by local decision")
+                _verify_log(
+                    called=False, route=route, status="skipped", confirmed=None,
+                    detail="2차 비활성 또는 일일 상한 초과 → 1차 판정대로 발송",
+                )
         else:
             send_slack = False
             decision_note = "local_no_alert"
+            _verify_log(
+                called=False, route="-", status="not_alert", confirmed=None,
+                detail="1차 should_alert=false & 키워드 게이트 미통과 → 2차 미호출",
+            )
 
         # 2차(클라우드) confirmed 시, 2차가 전체 맥락을 보고 재선정한 evidence를 우선 사용.
         # (1차 로컬 9B는 evidence를 빈약/불안정하게 고르는 경향) 없으면 1차 evidence 유지.
