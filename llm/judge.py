@@ -310,6 +310,20 @@ def issue_candidate_sender_count(messages: Iterable[Any]) -> int:
     return len({s for _, s in detect_issue_candidates(list(messages)) if s})
 
 
+def matched_issue_keywords(messages: Iterable[Any]) -> list[str]:
+    """입력 메시지에서 실제로 매칭된 이슈 키워드 목록(고유·정렬).
+
+    어떤 키워드 때문에 키워드 게이트가 발동했는지 로그로 보여주기 위함이다.
+    """
+    found: set[str] = set()
+    for m in messages:
+        text = str(_read_message_value(m, "text", "") or "")
+        for kw in ISSUE_KEYWORDS:
+            if kw in text:
+                found.add(kw)
+    return sorted(found)
+
+
 def build_prompt(messages: Iterable[Any]) -> str:
     message_list = list(messages)
     candidates = detect_issue_candidates(message_list)

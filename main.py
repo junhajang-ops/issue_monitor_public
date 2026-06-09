@@ -21,6 +21,7 @@ from llm.judge import (
     format_thinking_status_for_display,
     issue_candidate_sender_count,
     judge_messages,
+    matched_issue_keywords,
     print_llm_response,
     verify_alert_cloud,
 )
@@ -98,12 +99,14 @@ def _verify_log(
     status: str,
     confirmed: bool | None,
     detail: str,
+    keywords: list[str] | None = None,
 ) -> None:
     """2차(클라우드) 검증 흐름을 색상으로 강조 기록.
 
     - LLM_RESPONSE_GREEN_OUTPUT=1이면 초록으로 강조한다.
     - 2차 confirmed=True(=Slack 발송)면 결과·응답 줄을 빨강으로 표시한다.
-    - 기록 항목: ① 2차 호출 여부 ② 호출 경로(1차 9B alert vs 키워드 게이트 강제) ③ 2차 응답.
+    - 기록 항목: ① 2차 호출 여부 ② 호출 경로(1차 9B alert vs 키워드 게이트 강제)
+      ③ 매칭된 이슈 키워드 ④ 2차 응답.
     """
     on = config.LLM_RESPONSE_GREEN_OUTPUT
     esc = chr(27)
@@ -118,6 +121,8 @@ def _verify_log(
 
     _ln(bar)
     _ln(f"[2차 검증] {'호출됨' if called else '미호출'} | 경로: {route} | status={status}")
+    if keywords:
+        _ln(f"[이슈 키워드] 매칭 {len(keywords)}종: {keywords}")
     if confirmed is not None:
         _ln(
             f"[2차 결과] confirmed={confirmed} → {'발송' if confirmed else '차단'}",
@@ -255,6 +260,7 @@ def run_cycle() -> float:
                 if should_alert
                 else f"키워드 게이트 강제(9B=false, 이슈키워드 {keyword_sender_count}명)"
             )
+            keyword_hits = matched_issue_keywords(recent_rows)
             if config.VERIFY_ENABLED and _verify_under_daily_limit(now):
                 cloud_verify = verify_alert_cloud(recent_rows, current_category, slack_content)
                 cv_status = cloud_verify.get("status")
@@ -269,6 +275,7 @@ def run_cycle() -> float:
                     _verify_log(
                         called=True, route=route, status="ok",
                         confirmed=send_slack, detail=str(cloud_verify.get("reason") or ""),
+                        keywords=keyword_hits,
                     )
                 else:
                     # 2차 장애/키없음/파싱실패 → 로컬 판정대로 발송(recall 우선).
@@ -280,6 +287,7 @@ def run_cycle() -> float:
                     _verify_log(
                         called=True, route=route, status=cv_status, confirmed=None,
                         detail=f"2차 장애 → 1차 판정대로 발송(fallback): {str(cloud_verify.get('error'))[:160]}",
+                        keywords=keyword_hits,
                     )
             else:
                 # 검증 비활성 또는 일일 상한 초과 → 로컬 판정대로.
@@ -290,6 +298,7 @@ def run_cycle() -> float:
                 _verify_log(
                     called=False, route=route, status="skipped", confirmed=None,
                     detail="2차 비활성 또는 일일 상한 초과 → 1차 판정대로 발송",
+                    keywords=keyword_hits,
                 )
         else:
             send_slack = False
