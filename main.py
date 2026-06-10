@@ -23,6 +23,7 @@ from llm.judge import (
     judge_messages,
     matched_issue_keywords,
     print_llm_response,
+    reload_issue_keywords,
     verify_alert_cloud,
 )
 from pipeline.normalize import (
@@ -153,6 +154,10 @@ def run_cycle() -> float:
 
     print("=" * 80)
     print(f"[RUN] now={now.strftime('%Y-%m-%d %H:%M:%S KST')}")
+
+    # 키워드 파일(issue_keywords.txt) 변경을 재시작 없이 반영(매 사이클 재로드).
+    _kw = reload_issue_keywords()
+    print(f"[KEYWORDS] reloaded={len(_kw)} (file={config.ISSUE_KEYWORDS_FILE})")
 
     source_files = discover_all_sources(now_for_discovery)
     print(f"[DISCOVERY] matched_files={len(source_files)}")

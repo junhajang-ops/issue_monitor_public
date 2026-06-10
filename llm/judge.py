@@ -320,6 +320,17 @@ def _load_issue_keywords() -> tuple[str, ...]:
 ISSUE_KEYWORDS = _load_issue_keywords()
 
 
+def reload_issue_keywords() -> tuple[str, ...]:
+    """issue_keywords.txt를 다시 읽어 전역 ISSUE_KEYWORDS를 갱신한다.
+
+    main.py가 매 사이클 시작 시 호출 → main 재시작 없이 키워드 변경을 즉시 반영.
+    detect_issue_candidates·matched_issue_keywords가 이 전역을 참조하므로 갱신 즉시 적용된다.
+    """
+    global ISSUE_KEYWORDS
+    ISSUE_KEYWORDS = _load_issue_keywords()
+    return ISSUE_KEYWORDS
+
+
 def detect_issue_candidates(messages: Iterable[Any]) -> list[tuple[int, str]]:
     """이슈 키워드를 포함한 메시지의 (idx, sender) 목록 반환(idx는 1-based)."""
     hits: list[tuple[int, str]] = []
