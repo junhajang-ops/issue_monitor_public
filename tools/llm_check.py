@@ -33,8 +33,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import config  # noqa: E402
+from _replay_core import nearest_runs, reconstruct  # noqa: E402
 from llm.judge import detect_issue_candidates, matched_issue_keywords  # noqa: E402
 
 SNAP = config.SNAPSHOT_DIR
@@ -47,20 +49,25 @@ def _should_alert(raw_response: str | None):
     return None if not ms else (ms[-1] == "true")
 
 
-def _keyword_gate(run_id: str):
-    """그 시점 정규화 메시지로 키워드 게이트를 재현.
+def _gate_from_msgs(msgs):
+    """메시지 리스트(dict, is_new 포함)로 키워드 게이트를 재현.
 
-    반환: (gate(bool|None), kws(list))
+    반환: (gate(bool), kws(list))
     - kws는 '게이트에 실제 기여한' 키워드만 = 신규(is_new) 메시지에서 매칭된 키워드.
       (로컬 단독 run은 게이트 미발동이므로 kws=[] → 키워드 표시 없이 '경로:로컬'만 보인다.)
     """
+    cand_idx = {i for i, _ in detect_issue_candidates(msgs)}
+    gate_rows = [m for i, m in enumerate(msgs, start=1) if i in cand_idx and bool(m.get("is_new"))]
+    return bool(gate_rows), matched_issue_keywords(gate_rows)
+
+
+def _keyword_gate(run_id: str):
+    """목록용: 스냅샷 normalized 를 읽어 게이트 재현. 스냅샷 없으면 (None, [])."""
     path = SNAP / run_id / "normalized" / "messages.jsonl"
     if not path.exists():
         return None, []
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    cand_idx = {i for i, _ in detect_issue_candidates(rows)}
-    gate_rows = [row for i, row in enumerate(rows, start=1) if i in cand_idx and bool(row.get("is_new"))]
-    return bool(gate_rows), matched_issue_keywords(gate_rows)
+    return _gate_from_msgs(rows)
 
 
 def _fetch_2nd_runs():
@@ -109,16 +116,22 @@ def _route_label(sa, gate) -> str:
 
 
 def _run_db_info(run_id: str):
-    """DB에서 (should_alert, cloud_verified, 2차호출여부)를 읽는다."""
+    """DB에서 should_alert·2차결과·window를 읽는다. run 없으면 None."""
     with sqlite3.connect(str(config.DB_PATH)) as conn:
         row = conn.execute(
-            "SELECT raw_response, cloud_verify_status, cloud_verified "
-            "FROM local_llm_runs WHERE run_id=?",
+            "SELECT raw_response, cloud_verify_status, cloud_verified, "
+            "context_window_start, window_end FROM local_llm_runs WHERE run_id=?",
             (run_id,),
         ).fetchone()
     if not row:
-        return None, None, False
-    return _should_alert(row[0]), row[2], (row[1] is not None)
+        return None
+    return {
+        "sa": _should_alert(row[0]),
+        "called": row[1] is not None,
+        "verified": row[2],
+        "cws": row[3],
+        "we": row[4],
+    }
 
 
 def _fmt_run(idx, run_id, created_at, verified, sa, gate, kws) -> str:
@@ -159,29 +172,41 @@ def list_mode(mode: str, limit: int, write) -> None:
 
 
 def _dump_normalized(run_id: str, write) -> None:
-    path = SNAP / run_id / "normalized" / "messages.jsonl"
-    if not path.exists():
-        write(f"[정규화 메시지 없음] {path}")
-        write("  (skipped_empty 사이클이거나 스냅샷이 정리됨. --raw 로 원본을 확인하세요.)")
+    info = _run_db_info(run_id)
+    if info is None:
+        write(f"[DB에 run 없음] run_id={run_id}")
+        before, after = nearest_runs(run_id)
+        if before:
+            write("  ↑ 이전(가까운 순): " + ", ".join(before))
+        if after:
+            write("  ↓ 이후(가까운 순): " + ", ".join(after))
+        if not before and not after:
+            write("  (DB에 run 기록이 없습니다)")
         return
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    rows.sort(key=lambda r: r.get("timestamp", ""))
-    new_cnt = sum(1 for r in rows if r.get("is_new"))
-    sa, verified, called = _run_db_info(run_id)
-    gate, kws = _keyword_gate(run_id)
-    write(f"=== run_id={run_id} | 정규화 메시지(1차 LLM 입력) {len(rows)}건 (NEW {new_cnt}건) ===")
-    head = f"[2차 호출 경로] {_route_label(sa, gate)}"
+    if not info["cws"] or not info["we"]:
+        write(f"[window 정보 없음] run_id={run_id}")
+        return
+    # 스냅샷 있으면 normalized, 없으면 카카오/인게임 원본에서 재구성(둘 다 is_new 포함).
+    msgs, source = reconstruct(run_id, info["cws"], info["we"])
+    if not msgs:
+        write(f"[메시지 없음] run_id={run_id} (입력={source} · skipped_empty 가능)")
+        return
+    new_cnt = sum(1 for m in msgs if m.get("is_new"))
+    gate, kws = _gate_from_msgs(msgs)
+    src_label = "스냅샷" if source == "snapshot" else "⚠ 재구성(스냅샷 만료 → 카카오/인게임 원본 복원)"
+    write(f"=== run_id={run_id} | 입력={src_label} | 메시지 {len(msgs)}건 (NEW {new_cnt}건) ===")
+    head = f"[2차 호출 경로] {_route_label(info['sa'], gate)}"
     if kws:
         head += f"  키워드:[{','.join(kws)}]"
-    if called:
-        head += f"  |  2차 결과: {'발송' if verified == 1 else ('차단' if verified == 0 else '?')}"
+    if info["called"]:
+        head += f"  |  2차 결과: {'발송' if info['verified'] == 1 else ('차단' if info['verified'] == 0 else '?')}"
     else:
         head += "  |  2차 미호출"
     write(head)
     write("형식: 번호 [NEW/   ] timestamp | source_id | sender: text")
-    for i, r in enumerate(rows, 1):
-        flag = "NEW" if r.get("is_new") else "   "
-        write(f"{i:3d} [{flag}] {r.get('timestamp')} | {r.get('source_id')} | {r.get('sender')}: {r.get('text')}")
+    for i, m in enumerate(msgs, 1):
+        flag = "NEW" if m.get("is_new") else "   "
+        write(f"{i:3d} [{flag}] {m['timestamp']} | {m['source_id']} | {m['sender']}: {m['text']}")
 
 
 def _dump_raw(run_id: str, write) -> None:
@@ -217,22 +242,24 @@ def show_indices(idxs: list[int], raw: bool, write) -> None:
 
 
 def show_run(token: str, raw: bool, write) -> None:
-    run_id = token
-    if not (SNAP / token).exists():
-        matches = (
-            sorted((p.name for p in SNAP.iterdir() if p.is_dir() and p.name.startswith(token)), reverse=True)
-            if SNAP.exists() else []
-        )
-        if not matches:
-            write(f"[매칭 없음] '{token}' (SNAPSHOT_DIR={SNAP})")
-            return
-        if len(matches) > 1:
-            write(f"=== '{token}' 매칭 {len(matches)}개 — 정확한 run_id 를 지정하세요 ===")
-            for m in matches:
-                write(m)
-            return
-        run_id = matches[0]
-    (_dump_raw if raw else _dump_normalized)(run_id, write)
+    # 정확한 run_id 형식이면 스냅샷 유무와 무관하게 처리(없으면 _dump_normalized가 원본 재구성).
+    if RUNID_RE.match(token):
+        (_dump_raw if raw else _dump_normalized)(token, write)
+        return
+    # prefix(부분 입력): 스냅샷 폴더에서 매칭(스냅샷 있는 run만).
+    matches = (
+        sorted((p.name for p in SNAP.iterdir() if p.is_dir() and p.name.startswith(token)), reverse=True)
+        if SNAP.exists() else []
+    )
+    if not matches:
+        write(f"[매칭 없음] '{token}' — 스냅샷 prefix 매칭 없음. 정확한 run_id를 입력하면 만료된 run도 재구성합니다.")
+        return
+    if len(matches) > 1:
+        write(f"=== '{token}' 매칭 {len(matches)}개 — 정확한 run_id 를 지정하세요 ===")
+        for m in matches:
+            write(m)
+        return
+    (_dump_raw if raw else _dump_normalized)(matches[0], write)
 
 
 def main() -> None:

@@ -56,16 +56,14 @@ python main.py --once
 
 ### 5. 테스트/검증
 ```powershell
-# 과거 run을 재구성해 하이브리드(1차 로컬 → 2차 OpenAI)로 재실행
-.venv\Scripts\python.exe tools\test_hybrid_replay.py
+# 특정 run을 실제 재실행(1차 로컬 → 2차 OpenAI → Slack 발송). 스냅샷 없으면 원본 재구성.
+.venv\Scripts\python.exe tools\llm_replay.py 20260604_011503   # 인자 없으면 회귀 7종 전체
+$env:REPLAY_ROUNDS='3'; .venv\Scripts\python.exe tools\llm_replay.py 20260604_011503  # 반복
 
-# 특정 run만 / 반복 횟수 지정
-$env:REPLAY_ONLY='20260604_011503'; $env:REPLAY_ROUNDS='3'; .venv\Scripts\python.exe tools\test_hybrid_replay.py
+# 합성 시나리오 9종으로 1차 프롬프트 점검(--dry-run 으로 프롬프트만)
+.venv\Scripts\python.exe tools\run_prompt_samples.py --case server_outage_many_users
 
-# 테스트 입력 메시지를 원문 그대로 조회
-.venv\Scripts\python.exe tools\show_test_messages.py [run_id]
-
-# 2차 검증(OpenAI) 호출 분석 — 경로별 목록 + 입력 메시지 조회
+# 2차 검증(OpenAI) 호출 분석 — 경로별 목록 + 입력 메시지 조회(스냅샷 만료 run은 자동 재구성)
 .venv\Scripts\python.exe tools\llm_check.py            # 2차 호출한 최근 50 run([번호] 표시)
 .venv\Scripts\python.exe tools\llm_check.py keyword    # 키워드 게이트로 2차 호출만
 .venv\Scripts\python.exe tools\llm_check.py local      # 로컬 모델(should_alert)로 2차 호출만
@@ -119,6 +117,8 @@ powershell -ExecutionPolicy Bypass -File start_monitor.ps1
 - `docs/PROJECT_HISTORY.md` — 변경 이력과 의사결정 기록
 - `docs/PROMPT_DRAFT_CRITICAL_ALERT.md` — 프롬프트 초안 및 카테고리 정의
 - `docs/SLACK_INTERACTIONS.md` — Slack interactivity(음소거 등) 운영 가이드
-- `tools/test_hybrid_replay.py` · `tools/show_test_messages.py` — 재현/조회 도구
-- `tools/llm_check.py` — 2차 검증 호출을 경로별(로컬/키워드/로컬+키워드)로 분석 + 입력 메시지 조회
+- `tools/llm_replay.py` — 특정 run을 1차→2차로 실제 재실행(스냅샷 없으면 원본 재구성, Slack 발송 포함)
+- `tools/llm_check.py` — 2차 검증 호출을 경로별(로컬/키워드/로컬+키워드)로 분석 + 입력 메시지 조회(스냅샷 만료 run은 자동 재구성)
+- `tools/run_prompt_samples.py` — 합성 시나리오 9종으로 1차 프롬프트 점검(`SAMPLE_CASES`)
+- `tools/_replay_core.py` — run 입력 재구성 공용 로직(llm_replay·llm_check 공유)
 - `issue_keywords.txt` — 1차 키워드 게이트용 키워드 목록(편집 가능, **매 사이클 자동 재로드** → main 재시작 불필요)

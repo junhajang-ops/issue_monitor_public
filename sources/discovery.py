@@ -5,13 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from config import (
-    CONTEXT_WINDOW_MINUTES,
-    INGAME_BASE_DIR,
-    INGAME_SOURCES,
-    KAKAO_BASE_DIR,
-    KAKAO_SOURCES,
-)
+import config
 from core.models import SourceFile
 
 
@@ -68,19 +62,19 @@ def _folder_may_overlap_context(folder_name: str, now: datetime) -> bool:
         return True
 
     end_dt = end_dt.replace(second=59)
-    context_start = now - timedelta(minutes=CONTEXT_WINDOW_MINUTES)
+    context_start = now - timedelta(minutes=config.CONTEXT_WINDOW_MINUTES)
 
     return start_dt <= now and end_dt >= context_start
 
 
 def _iter_candidate_kakao_files(now: datetime) -> list[Path]:
-    if not KAKAO_BASE_DIR.exists():
-        print(f"[WARN] KAKAO_BASE_DIR not found: {KAKAO_BASE_DIR}")
+    if not config.KAKAO_BASE_DIR.exists():
+        print(f"[WARN] config.KAKAO_BASE_DIR not found: {config.KAKAO_BASE_DIR}")
         return []
 
     candidates: list[Path] = []
 
-    for child in sorted(KAKAO_BASE_DIR.iterdir()):
+    for child in sorted(config.KAKAO_BASE_DIR.iterdir()):
         if child.is_dir():
             if not _folder_may_overlap_context(child.name, now):
                 continue
@@ -116,7 +110,7 @@ def discover_kakao_files(now: datetime) -> list[SourceFile]:
     results: list[SourceFile] = []
     candidate_files = _iter_candidate_kakao_files(now)
 
-    for source in KAKAO_SOURCES:
+    for source in config.KAKAO_SOURCES:
         source_id = source["source_id"]
         room_name = source["room_name"]
         filename_contains = source.get("filename_contains", [])
@@ -157,17 +151,17 @@ def discover_kakao_files(now: datetime) -> list[SourceFile]:
 def discover_ingame_files(now: datetime) -> list[SourceFile]:
     del now
 
-    if not INGAME_BASE_DIR.exists():
-        print(f"[WARN] INGAME_BASE_DIR not found: {INGAME_BASE_DIR}")
+    if not config.INGAME_BASE_DIR.exists():
+        print(f"[WARN] config.INGAME_BASE_DIR not found: {config.INGAME_BASE_DIR}")
         return []
 
     results: list[SourceFile] = []
 
-    for source in INGAME_SOURCES:
+    for source in config.INGAME_SOURCES:
         source_id = source["source_id"]
         file_glob = source["file_glob"]
 
-        for path in sorted(INGAME_BASE_DIR.glob(file_glob)):
+        for path in sorted(config.INGAME_BASE_DIR.glob(file_glob)):
             if path.is_file():
                 results.append(
                     SourceFile(

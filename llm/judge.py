@@ -1017,7 +1017,7 @@ VERIFY_SYSTEM_PROMPT = """
 너는 모바일 게임 운영 알림의 2차 정밀 검증기다. 1차 로컬 필터가 alert로 올린 건이
 운영자에게 즉시 알릴 진짜 이슈인지 재검증한다.
 반드시 유효한 JSON 객체 1개만 출력한다.
-허용 필드는 confirmed(boolean), reason(한국어 한 줄), evidence_message_ids(정수 배열) 3개뿐이다.
+허용 필드는 confirmed(boolean), reason(한국어 한 줄), reporter_message_ids(정수 배열), evidence_message_ids(정수 배열) 4개뿐이다.
 마크다운·설명·추가 필드 금지.
 """.strip()
 
@@ -1050,11 +1050,12 @@ A는 현재 신고자로 카운트한다.
 ([서버/접속 장애]·[계정/운영 리스크] 2명, [결제 문제] 3명) 신고했을 때만 confirmed=true.
 제외 후 남은 유효 신고 메시지의 고유 작성자 수로 임계를 판단한다. 미달하거나 애매하면 confirmed=false.
 
-confirmed=true이면, 임계 판단의 근거가 된 신고 메시지의 idx를 evidence_message_ids 배열에 담아라.
+confirmed=true이면, 임계 판단에서 신고자로 카운트한 본인 현재형 신고 메시지의 idx를 reporter_message_ids 배열에 담아라.
+confirmed=true이면, 임계 판단의 근거가 된 신고 메시지와 운영자 이해에 필요한 맥락 메시지의 idx를 evidence_message_ids 배열에 담아라.
 신고자 본인의 현재형 신고 발화는 물론, 그 신고의 증상·맥락을 구체화한 발화(예: "몇층이심?"에 이어진
 "렉걸렸네", "20초 뒤에 채팅나가네" 등 연속된 신고 흐름)도 함께 포함해, 운영자가 상황을 이해할 수 있게 하라.
 단 제외 대상(질문성 잡담·제3자 언급·경향 표현·무관한 대화)은 넣지 마라.
-confirmed=false이면 evidence_message_ids는 빈 배열([])로 둔다.
+confirmed=false이면 reporter_message_ids와 evidence_message_ids는 빈 배열([])로 둔다.
 
 아래 입력 메시지(idx, source_id, timestamp, sender, text):
 {payload}
@@ -1065,9 +1066,10 @@ VERIFY_RESPONSE_SCHEMA = {
     "properties": {
         "confirmed": {"type": "boolean"},
         "reason": {"type": "string"},
+        "reporter_message_ids": {"type": "array", "items": {"type": "integer"}},
         "evidence_message_ids": {"type": "array", "items": {"type": "integer"}},
     },
-    "required": ["confirmed", "reason", "evidence_message_ids"],
+    "required": ["confirmed", "reason", "reporter_message_ids", "evidence_message_ids"],
     "additionalProperties": False,
 }
 
@@ -1088,6 +1090,7 @@ def verify_alert_cloud(
         "status": "ok",
         "confirmed": None,
         "reason": "",
+        "reporter_message_ids": [],
         "evidence_message_ids": [],
         "thinking": "",
         "reasoning_tokens": None,
@@ -1198,6 +1201,15 @@ def verify_alert_cloud(
         return result
     result["confirmed"] = bool(parsed.get("confirmed"))
     result["reason"] = str(parsed.get("reason") or "")
+    reporter_raw = parsed.get("reporter_message_ids") or []
+    reporter_ids: list[int] = []
+    if isinstance(reporter_raw, list):
+        for x in reporter_raw:
+            try:
+                reporter_ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+    result["reporter_message_ids"] = reporter_ids
     ev_raw = parsed.get("evidence_message_ids") or []
     ev_ids: list[int] = []
     if isinstance(ev_raw, list):

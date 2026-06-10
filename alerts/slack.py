@@ -258,6 +258,7 @@ def send_slack_notification(
     fields: dict[str, Any] | None = None,
     is_test: bool = False,
     evidence_messages: Iterable[Any] | None = None,
+    channel: str | None = None,
 ) -> bool:
     if not should_send_slack(should_alert=should_alert, is_test=is_test):
         return False
@@ -275,39 +276,44 @@ def send_slack_notification(
     for key, value in (fields or {}).items():
         lines.append(f"*{key}:* `{_format_value(value)}`")
 
-    # content 전체가 아닌 카테고리 줄만 표시
-    category_line = _extract_category(content)
-    if category_line:
-        lines.append(f"*content:* {_truncate(category_line)}")
-
     text = "\n".join(lines)
 
-    # should_alert=True이고 Bot Token+Channel이 설정되어 있으면
-    # chat.postMessage로 main 메시지 게시 + thread로 evidence 게시.
-    use_bot_thread = bool(
-        should_alert
-        and config.SLACK_BOT_TOKEN
-        and config.SLACK_CHANNEL
+    target_channel = channel or config.SLACK_CHANNEL
+    channel_override = channel is not None
+
+    # should_alert=True는 기존처럼 Bot Token+Channel로 main 메시지+thread evidence를 보낸다.
+    # channel override가 있으면 TEMP/FALSE도 특정 채널에 보낼 수 있게 bot 경로를 사용한다.
+    use_bot_post = bool(
+        config.SLACK_BOT_TOKEN
+        and target_channel
+        and (should_alert or channel_override)
     )
 
-    if use_bot_thread:
-        blocks = _build_blocks(text, should_alert=should_alert)
+    if use_bot_post:
+        blocks = _build_blocks(text, should_alert=should_alert) if should_alert else None
         ts = _post_chat_message(
-            channel=config.SLACK_CHANNEL,
+            channel=target_channel,
             text=text,
             blocks=blocks,
         )
         if ts is None:
+            if channel_override:
+                print(f"[SLACK] bot post failed for channel={target_channel}")
+                return False
             print("[SLACK] bot post failed, falling back to webhook")
         else:
             print(f"[SLACK] sent=true via=bot ts={ts}")
-            if evidence_messages is not None:
+            if should_alert and evidence_messages is not None:
                 _send_evidence_thread(
-                    channel=config.SLACK_CHANNEL,
+                    channel=target_channel,
                     thread_ts=ts,
                     messages=evidence_messages,
                 )
             return True
+
+    if channel_override:
+        print(f"[SLACK] skipped: channel override requires bot token/channel={target_channel}")
+        return False
 
     # Webhook fallback (기존 흐름)
     if not config.SLACK_WEBHOOK_URL:

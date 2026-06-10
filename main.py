@@ -62,6 +62,18 @@ def _is_new_row(row: Any) -> bool:
         return bool(get_field(row, "is_new", 0))
 
 
+def _sender_from_row(row: Any) -> str:
+    return str(get_field(row, "sender", "") or "").strip()
+
+
+def _rows_by_prompt_indices(rows: list[Any], ids: set[int]) -> list[Any]:
+    return [row for index, row in enumerate(rows, start=1) if index in ids]
+
+
+def _unique_sender_count(rows: list[Any]) -> int:
+    return len({sender for row in rows if (sender := _sender_from_row(row))})
+
+
 def print_source_counts(messages: list[Any]) -> None:
     counter: Counter[str] = Counter()
     for message in messages:
@@ -154,6 +166,14 @@ def run_cycle() -> float:
 
     print("=" * 80)
     print(f"[RUN] now={now.strftime('%Y-%m-%d %H:%M:%S KST')}")
+
+    # .env 핵심 튜닝값을 매 사이클 재로드(재시작 없이 다음 사이클부터 반영).
+    config.reload_config()
+    print(
+        f"[CONFIG] reloaded: window={config.CONTEXT_WINDOW_MINUTES}/{config.NEW_WINDOW_MINUTES}분, "
+        f"temp={config.LLM_TEMPERATURE}, snapshot_runs={config.SNAPSHOT_RETENTION_RUNS}, "
+        f"slack_alert={config.SLACK_ALERT_ENABLED}"
+    )
 
     # 키워드 파일(issue_keywords.txt) 변경을 재시작 없이 반영(매 사이클 재로드).
     _kw = reload_issue_keywords()
@@ -343,25 +363,27 @@ def run_cycle() -> float:
             and cloud_verify.get("status") == "ok"
             and bool(cloud_verify.get("confirmed"))
         ):
+            reporter_ev_ids = set(cloud_verify.get("reporter_message_ids") or [])
+            reporter_rows = _rows_by_prompt_indices(recent_rows, reporter_ev_ids)
+            reporter_count = _unique_sender_count(reporter_rows)
             cloud_ev_ids = set(cloud_verify.get("evidence_message_ids") or [])
             if cloud_ev_ids:
-                cloud_evidence_rows = [
-                    row
-                    for index, row in enumerate(recent_rows, start=1)
-                    if index in cloud_ev_ids
-                ]
+                cloud_evidence_rows = _rows_by_prompt_indices(recent_rows, cloud_ev_ids)
                 if cloud_evidence_rows:
                     evidence_rows = cloud_evidence_rows
                     print(
                         f"[VERIFY] cloud re-selected evidence={sorted(cloud_ev_ids)}, "
                         f"matched_rows={len(evidence_rows)}"
                     )
+            print(
+                f"[VERIFY] reporter_message_ids={sorted(reporter_ev_ids)}, "
+                f"reporter_count={reporter_count}"
+            )
+        else:
+            reporter_count = 0
 
         slack_fields = {
             "run_id": snapshot.run_id,
-            "provider": config.LLM_PROVIDER,
-            "model": active_llm_model_name(),
-            "llm_status": judge_result.status,
             "llm_elapsed_sec": judge_result.elapsed_sec,
             "analyzed_messages": len(recent_rows),
             "evidence_messages": len(evidence_rows),
@@ -373,12 +395,68 @@ def run_cycle() -> float:
             slack_fields["cloud_confirmed"] = cloud_verify.get("confirmed")
 
         if send_slack:
-            send_slack_notification(
+            sent_b = send_slack_notification(
                 title="issue_monitor main",
                 should_alert=slack_should_alert,
                 content=slack_content,
                 fields=slack_fields,
                 evidence_messages=evidence_rows,
+            )
+            # A 채널 추가 발송 조건:
+            #  - 기존 임계(2차 confirmed + reporter_count>=3): 항상 A에 발송
+            #  - 임계 미만(reporter<3): SLACK_TEMP_TO_A=1 '그리고' NOTIFY_ALL=1일 때만 A에 발송
+            #    (TEMP_TO_A=1 단독으로는 임계 미만이 A로 가지 않음)
+            a_by_threshold = (
+                cloud_verify is not None
+                and cloud_verify.get("status") == "ok"
+                and bool(cloud_verify.get("confirmed"))
+                and reporter_count >= 3
+            )
+            if (
+                sent_b
+                and (a_by_threshold or (config.SLACK_TEMP_TO_A and config.SLACK_NOTIFY_ALL))
+                and config.SLACK_CHANNEL_A
+                and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL
+            ):
+                sent_a = send_slack_notification(
+                    title="issue_monitor main",
+                    should_alert=slack_should_alert,
+                    content=slack_content,
+                    fields=slack_fields,
+                    evidence_messages=evidence_rows,
+                    channel=config.SLACK_CHANNEL_A,
+                )
+                print(
+                    f"[SLACK] channel_a sent={str(sent_a).lower()} "
+                    f"reporter_count={reporter_count} temp_to_a={config.SLACK_TEMP_TO_A}"
+                )
+        elif config.SLACK_NOTIFY_ALL:
+            # B(기본) 발송. SLACK_TEMP_TO_A=1이면 A 채널에도 함께 발송(양쪽).
+            sent_b = send_slack_notification(
+                title="issue_monitor main",
+                should_alert=False,
+                content=slack_content,
+                fields=slack_fields,
+                evidence_messages=evidence_rows,
+            )
+            sent_a = None
+            if (
+                config.SLACK_TEMP_TO_A
+                and config.SLACK_CHANNEL_A
+                and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL
+            ):
+                sent_a = send_slack_notification(
+                    title="issue_monitor main",
+                    should_alert=False,
+                    content=slack_content,
+                    fields=slack_fields,
+                    evidence_messages=evidence_rows,
+                    channel=config.SLACK_CHANNEL_A,
+                )
+            print(
+                f"[SLACK] notify_all sent_b={str(sent_b).lower()} "
+                f"sent_a={str(sent_a).lower() if sent_a is not None else '-'} "
+                f"reason={decision_note} category={current_category}"
             )
         else:
             print(f"[SLACK] skipped=true reason={decision_note} category={current_category}")

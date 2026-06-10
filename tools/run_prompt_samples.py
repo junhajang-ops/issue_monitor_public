@@ -11,6 +11,8 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import config
+from alerts.slack import send_slack_notification
 from llm.judge import build_prompt, format_response_for_display, judge_messages
 
 
@@ -36,6 +38,40 @@ def make_messages(case_id: str, rows: list[tuple[int, str, str]]) -> list[dict[s
     return messages
 
 
+def _load_peak_sample() -> list[dict[str, Any]]:
+    """tools/peak_sample.jsonl(실제 저녁 피크 스냅샷에서 추출한 normalized 메시지)을 로드.
+
+    파일이 없으면 빈 리스트(케이스가 빈 입력이 됨). 실데이터라 잡담+신고가 자연 혼재한다.
+    """
+    p = Path(__file__).resolve().parent / "peak_sample.jsonl"
+    if not p.exists():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _mix_with_noise(case_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """케이스 메시지(문제 등)에 실제 피크 잡담(peak_sample)을 배경으로 섞는다(모든 케이스 기본 동작).
+
+    - 잡담의 최신 시각(window_end)을 기준으로 케이스 메시지의 상대 시각(BASE_TIME offset)을
+      평행이동 → 케이스 메시지가 윈도우 끝(최근 5분=new 근처)에 그대로 분포한다.
+    - is_new 등 케이스 메시지의 필드는 보존(make_messages가 offset>=-5를 is_new로 부여).
+    - peak_sample.jsonl이 없으면 케이스 메시지만 그대로 반환.
+    """
+    noise = _load_peak_sample()
+    if not noise:
+        return case_messages
+    stamps = [m["timestamp"] for m in noise if m.get("timestamp")]
+    base = max(datetime.fromisoformat(t) for t in stamps)
+    mixed = []
+    for m in case_messages:
+        try:
+            offset = datetime.fromisoformat(m["timestamp"]) - BASE_TIME
+        except Exception:
+            offset = timedelta()
+        mixed.append({**m, "timestamp": (base + offset).isoformat()})
+    return sorted(noise + mixed, key=lambda x: x.get("timestamp", ""))
+
+
 SAMPLE_CASES: dict[str, dict[str, Any]] = {
     "normal_chat": {
         "description": "정상 잡담만 있는 경우",
@@ -59,6 +95,33 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
                 (-4, "민수", "오늘 강화 너무 안 붙어서 짜증나네요"),
                 (-2, "하늘", "저도 재료 더 모아야겠어요"),
                 (-1, "민수", "운이 너무 없네"),
+            ],
+        ),
+    },
+    "bug_three_reporters": {
+        "description": "케이스 1: 같은 버그를 서로 다른 유저 3명이 보고",
+        "expected": "category 계정/운영 리스크, reporter 3명, should_alert true",
+        "messages": make_messages(
+            "bug_three_reporters",
+            [
+                (-6, "민수", "오늘 레이드 보상 뭐 나왔어요?"),
+                (-5, "하늘", "신수 융합 잠금 눌렀는데도 재료가 계속 빠집니다"),
+                (-4, "도윤", "저도 신수 융합 잠금 상태에서 연속 탭하니까 재화가 소모됐어요"),
+                (-3, "유나", "신수 융합 잠금 켜져 있는데 재료 빠지는 거 저만 그런 게 아니네요"),
+                (-1, "서준", "일단 신수 융합은 건드리지 말아야겠네요"),
+            ],
+        ),
+    },
+    "bug_two_reporters": {
+        "description": "케이스 2: 같은 버그를 서로 다른 유저 2명이 보고",
+        "expected": "category 계정/운영 리스크, reporter 2명, should_alert true",
+        "messages": make_messages(
+            "bug_two_reporters",
+            [
+                (-6, "민수", "신수 융합 재료는 어느 던전에서 모으나요?"),
+                (-5, "하늘", "잠금 켜둔 상태에서 융합 눌렀는데 재료가 사라졌습니다"),
+                (-3, "도윤", "저도 같은 현상 봤어요 잠금 상태인데 재화가 빠졌습니다"),
+                (-1, "유나", "난 괜찮은데?"),
             ],
         ),
     },
@@ -163,15 +226,72 @@ def print_case_list() -> None:
         print(f"- {case_id}: {case['description']}")
 
 
+def _evidence_rows(messages: list[dict[str, Any]], ids: Any) -> list[dict[str, Any]]:
+    if not isinstance(ids, list):
+        return []
+    evidence_ids = {int(i) for i in ids if isinstance(i, int)}
+    return [m for i, m in enumerate(messages, start=1) if i in evidence_ids]
+
+
+def _send_sample_slack(
+    *,
+    case_id: str,
+    case: dict[str, Any],
+    messages: list[dict[str, Any]],
+    result: Any,
+) -> None:
+    parsed = result.parsed_response or {}
+    should_alert = bool(parsed.get("should_alert", False))
+    # SLACK_TEMP_TO_A=1(테스트)이면 임계(should_alert)·NOTIFY_ALL과 무관하게 발송 시도.
+    if not config.SLACK_TEMP_TO_A and not should_alert and not config.SLACK_NOTIFY_ALL:
+        print("[SLACK] skipped=true reason=sample_false_notify_all_off")
+        return
+
+    content = str(parsed.get("content") or result.error or "")
+    evidence = _evidence_rows(messages, parsed.get("evidence_message_ids"))
+    fields = {
+        "case": case_id,
+        "expected": case["expected"],
+        "actual": should_alert,
+        "llm_status": result.status,
+        "llm_elapsed_sec": result.elapsed_sec,
+        "analyzed_messages": len(messages),
+        "evidence_messages": len(evidence),
+    }
+    # 기본 B. SLACK_TEMP_TO_A=1이면 A 채널에도 함께 발송(양쪽).
+    sample_channels = [None]  # None → 기본 B 채널
+    if (
+        config.SLACK_TEMP_TO_A
+        and config.SLACK_CHANNEL_A
+        and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL
+    ):
+        sample_channels.append(config.SLACK_CHANNEL_A)
+    for ch in sample_channels:
+        sent = send_slack_notification(
+            title="issue_monitor prompt sample",
+            should_alert=should_alert,
+            content=content,
+            fields=fields,
+            is_test=True,
+            evidence_messages=evidence,
+            channel=ch,
+        )
+        print(
+            f"[SLACK] sample sent={str(sent).lower()} "
+            f"should_alert={str(should_alert).lower()} channel={ch or 'B(default)'}"
+        )
+
+
 def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
     case = SAMPLE_CASES[case_id]
-    messages = case["messages"]
+    case_msgs = case["messages"]
+    messages = _mix_with_noise(case_msgs)  # 기본: 실제 피크 잡담을 배경으로 섞음
 
     print("=" * 80)
     print(f"[CASE] {case_id}")
     print(f"[DESC] {case['description']}")
     print(f"[EXPECTED] {case['expected']}")
-    print(f"[MESSAGES] count={len(messages)}")
+    print(f"[MESSAGES] count={len(messages)} (케이스 {len(case_msgs)} + 잡담 배경)")
 
     if show_messages:
         print(json.dumps(messages, ensure_ascii=False, indent=2))
@@ -187,6 +307,12 @@ def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
     if result.error:
         print(f"[ERROR] {result.error}")
     print(format_response_for_display(result))
+    _send_sample_slack(
+        case_id=case_id,
+        case=case,
+        messages=messages,
+        result=result,
+    )
 
 
 def parse_args() -> argparse.Namespace:

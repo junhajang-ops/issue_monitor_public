@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from config import SNAPSHOT_CLEANUP_ENABLED, SNAPSHOT_DIR, SNAPSHOT_RETENTION_RUNS
+import config
 from core.models import SnapshotFile, SnapshotResult, SourceFile
 
 
@@ -115,7 +115,7 @@ def _copy_with_retry(source_path: Path, dest_path: Path) -> bool:
 
 def create_snapshot(source_files: list[SourceFile], now: datetime) -> SnapshotResult:
     run_id = make_run_id(now)
-    snapshot_root = SNAPSHOT_DIR / run_id
+    snapshot_root = config.SNAPSHOT_DIR / run_id
     raw_root = snapshot_root / "raw"
 
     copied: list[SnapshotFile] = []
@@ -158,22 +158,22 @@ def create_snapshot(source_files: list[SourceFile], now: datetime) -> SnapshotRe
 
 def cleanup_old_snapshots() -> int:
     """
-    최근 SNAPSHOT_RETENTION_RUNS개 snapshot만 남기고 오래된 run 폴더를 삭제합니다.
+    최근 config.SNAPSHOT_RETENTION_RUNS개 snapshot만 남기고 오래된 run 폴더를 삭제합니다.
     반환값: 삭제한 snapshot 폴더 개수
     """
-    if not SNAPSHOT_CLEANUP_ENABLED:
+    if not config.SNAPSHOT_CLEANUP_ENABLED:
         return 0
 
-    if SNAPSHOT_RETENTION_RUNS <= 0:
+    if config.SNAPSHOT_RETENTION_RUNS <= 0:
         return 0
 
-    if not SNAPSHOT_DIR.exists():
+    if not config.SNAPSHOT_DIR.exists():
         return 0
 
-    run_dirs = [path for path in SNAPSHOT_DIR.iterdir() if path.is_dir()]
+    run_dirs = [path for path in config.SNAPSHOT_DIR.iterdir() if path.is_dir()]
     run_dirs.sort(key=lambda path: path.name, reverse=True)
 
-    keep = set(run_dirs[:SNAPSHOT_RETENTION_RUNS])
+    keep = set(run_dirs[:config.SNAPSHOT_RETENTION_RUNS])
     delete_targets = [path for path in run_dirs if path not in keep]
 
     deleted = 0

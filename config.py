@@ -191,6 +191,7 @@ SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 SLACK_ALERT_ENABLED = os.getenv("SLACK_ALERT_ENABLED", "0") == "1"
 SLACK_NOTIFY_ALL = os.getenv("SLACK_NOTIFY_ALL", "0") == "1"
 SLACK_NOTIFY_TESTS = os.getenv("SLACK_NOTIFY_TESTS", "0") == "1"
+SLACK_TEMP_TO_A = os.getenv("SLACK_TEMP_TO_A", "0") == "1"
 SLACK_TIMEOUT_SEC = int(os.getenv("SLACK_TIMEOUT_SEC", "10"))
 SLACK_INTERACTIONS_ENABLED = os.getenv("SLACK_INTERACTIONS_ENABLED", "0") == "1"
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
@@ -206,6 +207,7 @@ SLACK_SNOOZE_MINUTES = int(os.getenv("SLACK_SNOOZE_MINUTES", "10"))
 # 미설정 시 기존 Webhook 흐름 사용 (스레드 evidence 비활성).
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "")
+SLACK_CHANNEL_A = os.getenv("SLACK_CHANNEL_A", "")
 SLACK_EVIDENCE_MAX_PER_SOURCE = int(os.getenv("SLACK_EVIDENCE_MAX_PER_SOURCE", "20"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -218,3 +220,67 @@ CANDIDATE_SCORE_THRESHOLD = float(os.getenv("CANDIDATE_SCORE_THRESHOLD", "0.50")
 FINAL_CONFIDENCE_THRESHOLD = float(os.getenv("FINAL_CONFIDENCE_THRESHOLD", "0.70"))
 
 ALERT_MIN_SEVERITY = os.getenv("ALERT_MIN_SEVERITY", "medium")
+
+
+# =========================
+# 매 run 재로드(런타임 튜닝값)
+# =========================
+# 아래 키들은 main.run_cycle 시작 시 reload_config()로 다시 읽혀,
+# .env 수정이 main 재시작 없이 다음 사이클부터 반영된다.
+# (경로·API 토큰·엔드포인트·소스 목록 등은 reload 대상이 아니다 — 재시작 시에만 반영.)
+# 주의: 값/기본값을 바꿀 때는 위의 모듈-레벨 정의와 아래 reload_config()를 함께 수정할 것.
+_RELOADABLE_KEYS = (
+    "RUN_INTERVAL_SECONDS", "CONTEXT_WINDOW_MINUTES", "NEW_WINDOW_MINUTES",
+    "DB_MESSAGE_RETENTION_MINUTES", "SNAPSHOT_RETENTION_RUNS", "LLM_TIMEOUT_SEC",
+    "LLM_SHOW_THINKING_OUTPUT", "LLM_THINKING_STATUS_OUTPUT", "LLM_DISPLAY_RAW_WITH_THINKING",
+    "LLM_STORE_RAW_WITH_THINKING", "LLM_TEMPERATURE", "LLM_TOP_P", "LLM_TOP_K",
+    "LLM_PRESENCE_PENALTY", "LLM_RESPONSE_GREEN_OUTPUT", "SLACK_ALERT_ENABLED",
+    "SLACK_NOTIFY_ALL", "SLACK_NOTIFY_TESTS", "SLACK_TEMP_TO_A", "SLACK_INTERACTIONS_ENABLED",
+    "SLACK_CHANNEL", "SLACK_CHANNEL_A", "SLACK_EVIDENCE_MAX_PER_SOURCE",
+)
+
+
+def reload_config() -> dict:
+    """`.env`를 다시 읽어 런타임 튜닝값(_RELOADABLE_KEYS)을 갱신한다.
+
+    - main.run_cycle 시작 시 호출 → 재시작 없이 다음 사이클부터 반영.
+    - 경로·토큰·엔드포인트·소스 목록은 갱신하지 않는다(런타임 변경 비권장).
+    - 갱신된 값 dict를 반환(로그용).
+    """
+    global RUN_INTERVAL_SECONDS, CONTEXT_WINDOW_MINUTES, NEW_WINDOW_MINUTES
+    global DB_MESSAGE_RETENTION_MINUTES, SNAPSHOT_RETENTION_RUNS, LLM_TIMEOUT_SEC
+    global LLM_SHOW_THINKING_OUTPUT, LLM_THINKING_STATUS_OUTPUT, LLM_DISPLAY_RAW_WITH_THINKING
+    global LLM_STORE_RAW_WITH_THINKING, LLM_TEMPERATURE, LLM_TOP_P, LLM_TOP_K
+    global LLM_PRESENCE_PENALTY, LLM_RESPONSE_GREEN_OUTPUT, SLACK_ALERT_ENABLED
+    global SLACK_NOTIFY_ALL, SLACK_NOTIFY_TESTS, SLACK_TEMP_TO_A, SLACK_INTERACTIONS_ENABLED
+    global SLACK_CHANNEL, SLACK_CHANNEL_A, SLACK_EVIDENCE_MAX_PER_SOURCE
+
+    load_dotenv(override=True)
+
+    RUN_INTERVAL_SECONDS = int(os.getenv("RUN_INTERVAL_SECONDS", "300"))
+    CONTEXT_WINDOW_MINUTES = int(os.getenv("CONTEXT_WINDOW_MINUTES", "10"))
+    NEW_WINDOW_MINUTES = int(os.getenv("NEW_WINDOW_MINUTES", "5"))
+    DB_MESSAGE_RETENTION_MINUTES = int(
+        os.getenv("DB_MESSAGE_RETENTION_MINUTES", str(CONTEXT_WINDOW_MINUTES))
+    )
+    SNAPSHOT_RETENTION_RUNS = int(os.getenv("SNAPSHOT_RETENTION_RUNS", "50"))
+    LLM_TIMEOUT_SEC = int(os.getenv("LLM_TIMEOUT_SEC", "180"))
+    LLM_SHOW_THINKING_OUTPUT = os.getenv("LLM_SHOW_THINKING_OUTPUT", "0") == "1"
+    LLM_THINKING_STATUS_OUTPUT = os.getenv("LLM_THINKING_STATUS_OUTPUT", "1") == "1"
+    LLM_DISPLAY_RAW_WITH_THINKING = os.getenv("LLM_DISPLAY_RAW_WITH_THINKING", "1") == "1"
+    LLM_STORE_RAW_WITH_THINKING = os.getenv("LLM_STORE_RAW_WITH_THINKING", "0") == "1"
+    LLM_TEMPERATURE = _optional_float_env("LLM_TEMPERATURE")
+    LLM_TOP_P = _optional_float_env("LLM_TOP_P")
+    LLM_TOP_K = _optional_int_env("LLM_TOP_K")
+    LLM_PRESENCE_PENALTY = _optional_float_env("LLM_PRESENCE_PENALTY")
+    LLM_RESPONSE_GREEN_OUTPUT = os.getenv("LLM_RESPONSE_GREEN_OUTPUT", "1") == "1"
+    SLACK_ALERT_ENABLED = os.getenv("SLACK_ALERT_ENABLED", "0") == "1"
+    SLACK_NOTIFY_ALL = os.getenv("SLACK_NOTIFY_ALL", "0") == "1"
+    SLACK_NOTIFY_TESTS = os.getenv("SLACK_NOTIFY_TESTS", "0") == "1"
+    SLACK_TEMP_TO_A = os.getenv("SLACK_TEMP_TO_A", "0") == "1"
+    SLACK_INTERACTIONS_ENABLED = os.getenv("SLACK_INTERACTIONS_ENABLED", "0") == "1"
+    SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "")
+    SLACK_CHANNEL_A = os.getenv("SLACK_CHANNEL_A", "")
+    SLACK_EVIDENCE_MAX_PER_SOURCE = int(os.getenv("SLACK_EVIDENCE_MAX_PER_SOURCE", "20"))
+
+    return {k: globals()[k] for k in _RELOADABLE_KEYS}

@@ -15,5 +15,6 @@ data/logs/
 check0117.py
 data/sleep_data.json
 data/.llm_check_last.json
+tools/peak_sample.jsonl
 새 텍스트 문서.txt
 COMMIT_MSG.txt
