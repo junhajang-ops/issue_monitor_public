@@ -13,18 +13,42 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 from alerts.slack import send_slack_notification
-from llm.judge import build_prompt, format_response_for_display, judge_messages
+from llm.judge import (
+    build_prompt,
+    detect_issue_candidates,
+    format_response_for_display,
+    judge_messages,
+    matched_issue_keywords,
+    verify_alert_cloud,
+)
+from main import (
+    _is_new_row,
+    _parse_alert_category,
+    _rows_by_prompt_indices,
+    _unique_sender_count,
+    _verify_under_daily_limit,
+)
 
 
 KST = timezone(timedelta(hours=9))
 BASE_TIME = datetime(2026, 5, 11, 19, 0, 0, tzinfo=KST)
 
 
-def make_messages(case_id: str, rows: list[tuple[int, str, str]]) -> list[dict[str, Any]]:
+def make_messages(case_id: str, rows: list[tuple]) -> list[dict[str, Any]]:
+    """rows 각 항목은 (분offset, sender, text) 또는 (분offset, sender, text, source_id).
+
+    - source_id를 4번째로 주면 그 값을 그대로 사용한다(예: "kakao_a" / "kakao_b" / "ingame").
+    - 생략하면 index 기반 기본값("ingame" 또는 "kakao_a")을 부여한다.
+    즉 문제 메시지를 어느 채널(출처)에서 온 것으로 둘지 케이스에서 직접 지정/확인할 수 있다.
+    """
     messages: list[dict[str, Any]] = []
-    for index, (minute_offset, sender, text) in enumerate(rows, start=1):
+    for index, row in enumerate(rows, start=1):
+        if len(row) == 4:
+            minute_offset, sender, text, source_id = row
+        else:
+            minute_offset, sender, text = row
+            source_id = "ingame" if index % 3 else "kakao_a"
         timestamp = BASE_TIME + timedelta(minutes=minute_offset)
-        source_id = "ingame" if index % 3 else "kakao_a"
         messages.append(
             {
                 "message_id": f"{case_id}_{index:02d}",
@@ -75,7 +99,7 @@ def _mix_with_noise(case_messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 SAMPLE_CASES: dict[str, dict[str, Any]] = {
     "normal_chat": {
         "description": "정상 잡담만 있는 경우",
-        "expected": "issue_score 0.00~0.20, severity none 또는 low, should_alert false",
+        "expected": "should_alert false — 일반 잡담만",
         "messages": make_messages(
             "normal_chat",
             [
@@ -88,7 +112,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "single_complaint": {
         "description": "단일 유저 불만 1건",
-        "expected": "issue_score 0.21~0.45, severity low, should_alert false",
+        "expected": "should_alert false — 단일 불만(임계 미달)",
         "messages": make_messages(
             "single_complaint",
             [
@@ -100,15 +124,15 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "bug_three_reporters": {
         "description": "케이스 1: 같은 버그를 서로 다른 유저 3명이 보고",
-        "expected": "category 계정/운영 리스크, reporter 3명, should_alert true",
+        "expected": "category 서버/접속 장애, reporter 3명, should_alert true",
         "messages": make_messages(
             "bug_three_reporters",
             [
                 (-6, "민수", "오늘 레이드 보상 뭐 나왔어요?"),
-                (-5, "하늘", "신수 융합 잠금 눌렀는데도 재료가 계속 빠집니다"),
-                (-4, "도윤", "저도 신수 융합 잠금 상태에서 연속 탭하니까 재화가 소모됐어요"),
-                (-3, "유나", "신수 융합 잠금 켜져 있는데 재료 빠지는 거 저만 그런 게 아니네요"),
-                (-1, "서준", "일단 신수 융합은 건드리지 말아야겠네요"),
+                (-5, "하늘", "서버 렉", "ingame"),
+                (-4, "도윤", "우편 열면 로딩걸림", "kakao_a"),
+                (-3, "유나", "지금 접속 안되나요?", "ingame"),
+                (-1, "서준", "지금 안됨", "ingame"),
             ],
         ),
     },
@@ -118,16 +142,16 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
         "messages": make_messages(
             "bug_two_reporters",
             [
-                (-6, "민수", "신수 융합 재료는 어느 던전에서 모으나요?"),
-                (-5, "하늘", "잠금 켜둔 상태에서 융합 눌렀는데 재료가 사라졌습니다"),
-                (-3, "도윤", "저도 같은 현상 봤어요 잠금 상태인데 재화가 빠졌습니다"),
+                (-6, "민수", "신수 융합 재료는 어느 던전에서 모으나요?", "ingame"),
+                (-5, "하늘", "잠금 켜둔 상태에서 융합 눌렀는데 재료가 사라졌습니다", "ingame"),
+                (-3, "도윤", "저도 같은 현상 봤어요 잠금 상태인데 재화가 빠졌습니다", "ingame"),
                 (-1, "유나", "난 괜찮은데?"),
             ],
         ),
     },
     "server_outage_many_users": {
         "description": "여러 유저의 서버 장애 신고",
-        "expected": "issue_score 0.80 이상 또는 severity high/critical, should_alert true",
+        "expected": "should_alert true — [서버/접속 장애] 서로 다른 2명 이상 신고",
         "messages": make_messages(
             "server_outage_many_users",
             [
@@ -141,7 +165,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "payment_missing_item": {
         "description": "결제 후 상품 미지급 신고",
-        "expected": "issue_score 0.65 이상, category payment, should_alert true 후보",
+        "expected": "should_alert true 후보 — [결제 문제] 미지급, 서로 다른 3명 기준",
         "messages": make_messages(
             "payment_missing_item",
             [
@@ -153,7 +177,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "refund_group_complaint": {
         "description": "환불 불만 다수 발생",
-        "expected": "issue_score 0.65 이상, category refund, should_alert true 후보",
+        "expected": "should_alert true 후보 — [결제 문제] 환불 지연/오류",
         "messages": make_messages(
             "refund_group_complaint",
             [
@@ -166,7 +190,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "exploit_report": {
         "description": "핵/치트 의심 제보",
-        "expected": "issue_score 0.65 이상 가능, category exploit, 근거가 약하면 medium",
+        "expected": "[계정/운영 리스크] 핵/치트 의심 — 근거가 약하면 should_alert false",
         "messages": make_messages(
             "exploit_report",
             [
@@ -178,7 +202,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "profanity_only": {
         "description": "욕설/분위기 악화만 있고 실제 운영 이슈는 없는 경우",
-        "expected": "issue_score 0.00~0.30, category sentiment 또는 abuse, should_alert false",
+        "expected": "should_alert false — 욕설/감정 표출뿐, 운영 이슈 아님",
         "messages": make_messages(
             "profanity_only",
             [
@@ -191,7 +215,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "same_user_spam": {
         "description": "같은 유저가 반복 도배하는 경우",
-        "expected": "동일 sender 반복만으로는 high 지양, should_alert false 권장",
+        "expected": "should_alert false — 동일 sender 반복(서로 다른 신고자 아님)",
         "messages": make_messages(
             "same_user_spam",
             [
@@ -205,7 +229,7 @@ SAMPLE_CASES: dict[str, dict[str, Any]] = {
     },
     "repeated_multi_user_latency": {
         "description": "여러 유저가 같은 렉/튕김 현상을 말하는 경우",
-        "expected": "issue_score 0.65 이상 후보, category latency/server, should_alert는 심각도에 따라 결정",
+        "expected": "[서버/접속 장애] 렉/튕김 — 서로 다른 신고자 수에 따라 should_alert",
         "messages": make_messages(
             "repeated_multi_user_latency",
             [
@@ -224,62 +248,6 @@ def print_case_list() -> None:
     print("사용 가능한 샘플 케이스:")
     for case_id, case in SAMPLE_CASES.items():
         print(f"- {case_id}: {case['description']}")
-
-
-def _evidence_rows(messages: list[dict[str, Any]], ids: Any) -> list[dict[str, Any]]:
-    if not isinstance(ids, list):
-        return []
-    evidence_ids = {int(i) for i in ids if isinstance(i, int)}
-    return [m for i, m in enumerate(messages, start=1) if i in evidence_ids]
-
-
-def _send_sample_slack(
-    *,
-    case_id: str,
-    case: dict[str, Any],
-    messages: list[dict[str, Any]],
-    result: Any,
-) -> None:
-    parsed = result.parsed_response or {}
-    should_alert = bool(parsed.get("should_alert", False))
-    # SLACK_TEMP_TO_A=1(테스트)이면 임계(should_alert)·NOTIFY_ALL과 무관하게 발송 시도.
-    if not config.SLACK_TEMP_TO_A and not should_alert and not config.SLACK_NOTIFY_ALL:
-        print("[SLACK] skipped=true reason=sample_false_notify_all_off")
-        return
-
-    content = str(parsed.get("content") or result.error or "")
-    evidence = _evidence_rows(messages, parsed.get("evidence_message_ids"))
-    fields = {
-        "case": case_id,
-        "expected": case["expected"],
-        "actual": should_alert,
-        "llm_status": result.status,
-        "llm_elapsed_sec": result.elapsed_sec,
-        "analyzed_messages": len(messages),
-        "evidence_messages": len(evidence),
-    }
-    # 기본 B. SLACK_TEMP_TO_A=1이면 A 채널에도 함께 발송(양쪽).
-    sample_channels = [None]  # None → 기본 B 채널
-    if (
-        config.SLACK_TEMP_TO_A
-        and config.SLACK_CHANNEL_A
-        and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL
-    ):
-        sample_channels.append(config.SLACK_CHANNEL_A)
-    for ch in sample_channels:
-        sent = send_slack_notification(
-            title="issue_monitor prompt sample",
-            should_alert=should_alert,
-            content=content,
-            fields=fields,
-            is_test=True,
-            evidence_messages=evidence,
-            channel=ch,
-        )
-        print(
-            f"[SLACK] sample sent={str(sent).lower()} "
-            f"should_alert={str(should_alert).lower()} channel={ch or 'B(default)'}"
-        )
 
 
 def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
@@ -302,17 +270,134 @@ def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
         print("[DRY RUN] Ollama 호출 없이 프롬프트 구성만 확인했습니다.")
         return
 
+    # === main.py run_cycle 과 동일한 1차 → 키워드게이트 → 2차 → 발송(B/A) 로직 ===
+    now = datetime.now(KST)
     result = judge_messages(messages)
-    print(f"[RESULT] status={result.status}, elapsed_sec={result.elapsed_sec:.2f}")
-    if result.error:
-        print(f"[ERROR] {result.error}")
-    print(format_response_for_display(result))
-    _send_sample_slack(
-        case_id=case_id,
-        case=case,
-        messages=messages,
-        result=result,
+    parsed = result.parsed_response or {}
+    should_alert = bool(parsed.get("should_alert", False))
+    category = _parse_alert_category(parsed)
+    content = str(parsed.get("content") or result.error or "")
+
+    _issue_cands = detect_issue_candidates(messages)
+    keyword_sender_count = len({s for _, s in _issue_cands if s})
+    cand_idx = {i for i, _ in _issue_cands}
+    keyword_gate = any(
+        (i in cand_idx) and _is_new_row(row) for i, row in enumerate(messages, start=1)
     )
+
+    print(format_response_for_display(result))
+    print(f"[1차] status={result.status} should_alert={should_alert} keyword_gate={keyword_gate} category={category}")
+
+    evidence_ids_set = set(parsed.get("evidence_message_ids") or [])
+    evidence_rows = [row for i, row in enumerate(messages, start=1) if i in evidence_ids_set]
+    if not evidence_rows and keyword_gate:
+        evidence_rows = [row for i, row in enumerate(messages, start=1) if i in cand_idx]
+
+    slack_should_alert = should_alert
+    send_slack = False
+    cloud_verify: dict[str, Any] | None = None
+    decision_note = ""
+    reporter_count = 0
+
+    if result.status != "ok":
+        decision_note = f"llm_not_ok_{result.status}"
+        slack_should_alert = False
+    elif should_alert or keyword_gate:
+        route = "1차 로컬(9B) alert" if should_alert else f"키워드 게이트(9B=false, {keyword_sender_count}명)"
+        keyword_hits = matched_issue_keywords(messages)
+        if config.VERIFY_ENABLED and _verify_under_daily_limit(now):
+            cloud_verify = verify_alert_cloud(messages, category, content)
+            cv_status = cloud_verify.get("status")
+            if cv_status == "ok":
+                send_slack = bool(cloud_verify.get("confirmed"))
+                decision_note = "cloud_confirmed" if send_slack else "cloud_rejected"
+                if send_slack and not should_alert:
+                    content = str(cloud_verify.get("reason") or content)
+                    slack_should_alert = True
+                    decision_note = "cloud_confirmed_via_keyword_gate"
+                print(f"  [2차] route={route} status=ok confirmed={send_slack} 키워드:{keyword_hits}")
+                print(f"        {str(cloud_verify.get('reason') or '')[:140]}")
+            else:
+                send_slack = True
+                decision_note = f"cloud_fallback_{cv_status}"
+                if not should_alert:
+                    slack_should_alert = True
+                    decision_note = f"cloud_fallback_{cv_status}_keyword_gate"
+                print(f"  [2차] route={route} status={cv_status} → fallback 발송")
+        else:
+            send_slack = True
+            decision_note = "verify_disabled_or_daily_limit"
+            if not should_alert:
+                slack_should_alert = True
+            print(f"  [2차] route={route} 비활성/상한 → 1차 판정대로 발송")
+    else:
+        decision_note = "local_no_alert"
+        print("  [2차] 미호출 (1차 alert/게이트 아님)")
+
+    # 2차 confirmed 시 evidence 재선정 + reporter_count (main과 동일)
+    if cloud_verify and cloud_verify.get("status") == "ok" and bool(cloud_verify.get("confirmed")):
+        reporter_ev_ids = set(cloud_verify.get("reporter_message_ids") or [])
+        reporter_rows = _rows_by_prompt_indices(messages, reporter_ev_ids)
+        reporter_count = _unique_sender_count(reporter_rows)
+        cloud_ev_ids = set(cloud_verify.get("evidence_message_ids") or [])
+        if cloud_ev_ids:
+            cloud_rows = _rows_by_prompt_indices(messages, cloud_ev_ids)
+            if cloud_rows:
+                evidence_rows = cloud_rows
+        print(f"  [2차] reporter_count={reporter_count} evidence={len(evidence_rows)}건")
+
+    slack_fields = {
+        "case": case_id,
+        "category": category or "unknown",
+        "decision": decision_note,
+        "analyzed_messages": len(messages),
+        "evidence_messages": len(evidence_rows),
+        "reporter_count": reporter_count,
+    }
+    if cloud_verify is not None:
+        slack_fields["cloud_verify"] = cloud_verify.get("status")
+        slack_fields["cloud_confirmed"] = cloud_verify.get("confirmed")
+
+    title = f"[샘플 {case_id}] issue_monitor"
+    if send_slack:
+        sent_b = send_slack_notification(
+            title=title, should_alert=slack_should_alert, content=content,
+            fields=slack_fields, is_test=True, evidence_messages=evidence_rows,
+        )
+        a_by_threshold = (
+            cloud_verify is not None
+            and cloud_verify.get("status") == "ok"
+            and bool(cloud_verify.get("confirmed"))
+            and reporter_count >= 3
+        )
+        if (
+            sent_b
+            and (a_by_threshold or (config.SLACK_TEMP_TO_A and config.SLACK_NOTIFY_ALL))
+            and config.SLACK_CHANNEL_A
+            and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL
+        ):
+            sent_a = send_slack_notification(
+                title=title, should_alert=slack_should_alert, content=content,
+                fields=slack_fields, is_test=True, evidence_messages=evidence_rows,
+                channel=config.SLACK_CHANNEL_A,
+            )
+            print(f"  [SLACK] channel_a sent={str(sent_a).lower()} reporter_count={reporter_count} temp_to_a={config.SLACK_TEMP_TO_A}")
+        print(f"  [SLACK] sent_b={str(sent_b).lower()} decision={decision_note}")
+    elif config.SLACK_NOTIFY_ALL:
+        sent_b = send_slack_notification(
+            title=title, should_alert=False, content=content,
+            fields=slack_fields, is_test=True, evidence_messages=evidence_rows,
+        )
+        sent_a = None
+        if config.SLACK_TEMP_TO_A and config.SLACK_CHANNEL_A and config.SLACK_CHANNEL_A != config.SLACK_CHANNEL:
+            sent_a = send_slack_notification(
+                title=title, should_alert=False, content=content,
+                fields=slack_fields, is_test=True, evidence_messages=evidence_rows,
+                channel=config.SLACK_CHANNEL_A,
+            )
+        print(f"  [SLACK] notify_all sent_b={str(sent_b).lower()} sent_a={str(sent_a).lower() if sent_a is not None else '-'} reason={decision_note}")
+    else:
+        print(f"  [SLACK] skipped reason={decision_note}")
 
 
 def parse_args() -> argparse.Namespace:
