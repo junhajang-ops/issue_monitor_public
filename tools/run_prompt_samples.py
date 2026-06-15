@@ -368,7 +368,7 @@ def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
             cloud_verify is not None
             and cloud_verify.get("status") == "ok"
             and bool(cloud_verify.get("confirmed"))
-            and reporter_count >= 3
+            and reporter_count >= config.SLACK_CHANNEL_A_MIN_REPORTERS
         )
         if (
             sent_b

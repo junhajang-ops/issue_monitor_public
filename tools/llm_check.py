@@ -17,6 +17,7 @@
   python tools/llm_check.py 1 3 10 11    # (4) 직전 목록의 1·3·10·11번 run 정규화 메시지를 한 번에 전체 출력
   python tools/llm_check.py <run_id> [<run_id> ...]   # run_id 직접 조회(여러 개 가능)
   python tools/llm_check.py 1 3 --raw            # 번호 조회 시 raw 원본 파일도
+  python tools/llm_check.py <run_id> --thinking  # 1차 raw_response(thinking 포함 원문) 전체 출력
   python tools/llm_check.py [모드] --limit 30    # 표시 개수 조정
   python tools/llm_check.py [대상] --out out.txt # UTF-8 파일 저장(콘솔 한글 깨짐 회피)
 
@@ -171,7 +172,89 @@ def list_mode(mode: str, limit: int, write) -> None:
     write("\n(해당 없음)" if shown == 0 else f"\n총 {shown} run  ·  번호로 상세: llm_check.py <번호 ...>")
 
 
-def _dump_normalized(run_id: str, write) -> None:
+def _fetch_all_fields(run_id: str):
+    """local_llm_runs 의 모든 컬럼을 dict 로 반환. 없으면 None."""
+    with sqlite3.connect(str(config.DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM local_llm_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _dump_db_fields(run_id: str, write, show_thinking: bool = False) -> None:
+    """local_llm_runs DB 스키마의 세부 필드 값을 모두 출력(저장된 값 그대로, 재계산 없음).
+
+    reporter_count 는 발송 시점에 main 이 계산해 저장한 cloud_reporter_count 컬럼을 그대로 읽는다.
+    1차 raw_response(thinking 포함 원문)는 기본 생략하고 --thinking 시에만 전체 출력(DB에는 항상 저장됨).
+    """
+    d = _fetch_all_fields(run_id)
+    if d is None:
+        return
+    write("\n" + "─" * 70)
+    write("[DB 필드] local_llm_runs (전체)")
+    write(f"  status={d['status']}  error={d['error']}")
+    write(f"  message_count={d['message_count']}  new_message_count={d['new_message_count']}")
+    write(f"  context_window_start={d['context_window_start']}")
+    write(f"  window_start={d['window_start']}  window_end={d['window_end']}")
+    write(f"  [1차 판정] has_possible_issue={d['has_possible_issue']}")
+    write(
+        f"  [1차 토큰] prompt={d['llm_prompt_tokens']} cached={d['llm_cached_prompt_tokens']} "
+        f"completion={d['llm_completion_tokens']} reasoning={d['llm_reasoning_tokens']} "
+        f"output={d['llm_output_tokens']} total={d['llm_total_tokens']}"
+    )
+    write(
+        f"  [1차 chars] prompt={d['llm_prompt_chars']} response={d['llm_response_chars']} "
+        f"thinking={d['llm_thinking_chars']}"
+    )
+    write(
+        f"  [2차 결과] cloud_verify_status={d['cloud_verify_status']} "
+        f"cloud_verified={d['cloud_verified']} cloud_reporter_count={d['cloud_reporter_count']}"
+    )
+    # A 채널 발송 조건(저장값 기준): 2차 호출됐고 confirmed & reporter_count>=임계.
+    if d["cloud_verify_status"] is not None:
+        rc = d["cloud_reporter_count"]
+        _min = config.SLACK_CHANNEL_A_MIN_REPORTERS
+        a_ok = (d["cloud_verified"] == 1) and (rc is not None and rc >= _min)
+        write(f"  [A채널 조건] cloud_verified=1 & cloud_reporter_count>={_min} ⇒ {a_ok}")
+    write(f"  [2차 reason] {d['cloud_verify_reason']}")
+    write(
+        f"  [2차 토큰] prompt={d['cloud_prompt_tokens']} "
+        f"completion={d['cloud_completion_tokens']} total={d['cloud_total_tokens']}"
+    )
+    # cloud_raw_json(2차 응답 전체)에서 idx 목록만 참고 표시(메시지 매핑/재계산 없음).
+    craw = d.get("cloud_raw_json")
+    if not craw:
+        write(
+            "  [2차 응답 JSON] cloud_raw_json 없음 "
+            "(2차 미호출 또는 cloud_raw_json 컬럼 추가(2026-06-15) 이전 run)"
+        )
+    else:
+        try:
+            cv = json.loads(craw)
+            rep = sorted(set(cv.get("reporter_message_ids") or []))
+            ev = sorted(set(cv.get("evidence_message_ids") or []))
+            write(
+                f"  [2차 응답 JSON] confirmed={cv.get('confirmed')} "
+                f"reporter_message_ids={rep} evidence_message_ids={ev}"
+            )
+            if cv.get("error"):
+                write(f"     error={cv.get('error')}")
+        except Exception as exc:  # noqa: BLE001
+            write(f"  [2차 응답 JSON] 파싱 실패: {exc}")
+    write(f"  [llm_token_usage_json] {d['llm_token_usage_json']}")
+    raw = d["raw_response"] or ""
+    if show_thinking:
+        write("  [1차 raw_response] (thinking 포함 전체)")
+        write(str(raw))
+    else:
+        write(
+            f"  [1차 raw_response] {len(raw)}자 생략 "
+            "(thinking 포함 원문 — 전체 보기: --thinking)"
+        )
+
+
+def _dump_normalized(run_id: str, write, show_thinking: bool = False) -> None:
     info = _run_db_info(run_id)
     if info is None:
         write(f"[DB에 run 없음] run_id={run_id}")
@@ -207,6 +290,7 @@ def _dump_normalized(run_id: str, write) -> None:
     for i, m in enumerate(msgs, 1):
         flag = "NEW" if m.get("is_new") else "   "
         write(f"{i:3d} [{flag}] {m['timestamp']} | {m['source_id']} | {m['sender']}: {m['text']}")
+    _dump_db_fields(run_id, write, show_thinking)
 
 
 def _dump_raw(run_id: str, write) -> None:
@@ -224,7 +308,7 @@ def _dump_raw(run_id: str, write) -> None:
             write(fp.read_text(encoding="cp949", errors="replace"))
 
 
-def show_indices(idxs: list[int], raw: bool, write) -> None:
+def show_indices(idxs: list[int], raw: bool, write, show_thinking: bool = False) -> None:
     """직전 목록(캐시)의 번호들에 해당하는 run 상세를 차례로 출력."""
     cache = _load_cache()
     if not cache or not cache.get("ids"):
@@ -236,15 +320,21 @@ def show_indices(idxs: list[int], raw: bool, write) -> None:
         write("\n" + "=" * 70)
         if 1 <= n <= len(ids):
             write(f"[{n}] {ids[n - 1]}")
-            (_dump_raw if raw else _dump_normalized)(ids[n - 1], write)
+            if raw:
+                _dump_raw(ids[n - 1], write)
+            else:
+                _dump_normalized(ids[n - 1], write, show_thinking)
         else:
             write(f"[{n}] 범위 밖 (유효 1~{len(ids)})")
 
 
-def show_run(token: str, raw: bool, write) -> None:
+def show_run(token: str, raw: bool, write, show_thinking: bool = False) -> None:
     # 정확한 run_id 형식이면 스냅샷 유무와 무관하게 처리(없으면 _dump_normalized가 원본 재구성).
     if RUNID_RE.match(token):
-        (_dump_raw if raw else _dump_normalized)(token, write)
+        if raw:
+            _dump_raw(token, write)
+        else:
+            _dump_normalized(token, write, show_thinking)
         return
     # prefix(부분 입력): 스냅샷 폴더에서 매칭(스냅샷 있는 run만).
     matches = (
@@ -259,13 +349,20 @@ def show_run(token: str, raw: bool, write) -> None:
         for m in matches:
             write(m)
         return
-    (_dump_raw if raw else _dump_normalized)(matches[0], write)
+    if raw:
+        _dump_raw(matches[0], write)
+    else:
+        _dump_normalized(matches[0], write, show_thinking)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="2차 검증 호출 분석 + 1차 입력 메시지 조회")
     ap.add_argument("targets", nargs="*", help="all|keyword|local / 번호(여러 개) / run_id(여러 개)")
     ap.add_argument("--raw", action="store_true", help="raw 원본 파일도 덤프")
+    ap.add_argument(
+        "--thinking", action="store_true",
+        help="1차 raw_response(thinking 포함 원문) 전체 출력(기본은 길이만 표시)",
+    )
     ap.add_argument("--limit", type=int, default=50, help="목록 표시 개수(기본 50)")
     ap.add_argument("--out", help="결과를 UTF-8 파일로 저장")
     args = ap.parse_args()
@@ -288,12 +385,12 @@ def main() -> None:
     elif len(targets) == 1 and targets[0] in MODES:
         list_mode(targets[0], args.limit, write)
     elif all(t.isdigit() for t in targets):
-        show_indices([int(t) for t in targets], args.raw, write)
+        show_indices([int(t) for t in targets], args.raw, write, args.thinking)
     elif all(_is_runlike(t) for t in targets):
         for i, t in enumerate(targets):
             if i > 0:
                 write("\n" + "=" * 70)
-            show_run(t, args.raw, write)
+            show_run(t, args.raw, write, args.thinking)
     else:
         write(f"[알 수 없는 인자] {targets} — all|keyword|local / 번호 / run_id 중 하나로 입력하세요.")
 

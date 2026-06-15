@@ -12,6 +12,7 @@ from alerts.slack_interactions import (
     start_slack_interaction_server,
     start_socket_mode_client,
 )
+from core.logging_setup import setup_file_logging
 from core.time_utils import KST, to_iso_kst
 from llm.judge import (
     active_llm_model_name,
@@ -159,12 +160,14 @@ def _verify_log(
     _ln(bar)
 
 
-def run_cycle() -> float:
+def run_cycle(replay_run_id: str | None = None) -> float:
     cycle_started = time.perf_counter()
     now = datetime.now(KST)
     now_for_discovery = now.replace(tzinfo=None)
 
     print("=" * 80)
+    if replay_run_id:
+        print(f"[REPLAY] run_id={replay_run_id} — 과거 스냅샷 재실행(실제 발송 O · DB 쓰기 X)")
     print(f"[RUN] now={now.strftime('%Y-%m-%d %H:%M:%S KST')}")
 
     # .env 핵심 튜닝값을 매 사이클 재로드(재시작 없이 다음 사이클부터 반영).
@@ -179,39 +182,62 @@ def run_cycle() -> float:
     _kw = reload_issue_keywords()
     print(f"[KEYWORDS] reloaded={len(_kw)} (file={config.ISSUE_KEYWORDS_FILE})")
 
-    source_files = discover_all_sources(now_for_discovery)
-    print(f"[DISCOVERY] matched_files={len(source_files)}")
-
-    snapshot = create_snapshot(source_files, now_for_discovery)
-    print(f"[SNAPSHOT] run_id={snapshot.run_id}")
-    print(f"[SNAPSHOT] copied_files={len(snapshot.files)}")
-
-    messages, parse_errors = normalize_snapshot(snapshot, now)
-
-    write_normalized_messages(snapshot, messages)
-    write_parse_errors(snapshot, parse_errors)
-
-    print(f"[NORMALIZE] messages={len(messages)}")
-    print_source_counts(messages)
-    print(f"[NORMALIZE] parse_errors={len(parse_errors)}")
-
-    first_seen_at = now.isoformat()
     db_cutoff = now - timedelta(minutes=config.DB_MESSAGE_RETENTION_MINUTES)
     db_cutoff_iso = to_iso_kst(db_cutoff)
-    new_window_cutoff_iso = to_iso_kst(now - timedelta(minutes=config.NEW_WINDOW_MINUTES))
 
-    with connect_db(config.DB_PATH) as conn:
-        inserted_count = insert_messages(
-            conn,
-            messages,
-            run_id=snapshot.run_id,
-            first_seen_at=first_seen_at,
-        )
-        pruned_count = prune_messages_older_than(conn, db_cutoff_iso)
-        runs_cutoff_iso = to_iso_kst(now - timedelta(days=config.DB_RETENTION_DAYS))
-        pruned_runs = prune_db_runs_older_than(conn, runs_cutoff_iso)
-        recent_rows = fetch_messages_since(conn, db_cutoff_iso, new_window_cutoff_iso)
-        total_count = count_messages(conn)
+    if replay_run_id:
+        # 과거 run의 스냅샷(normalized)을 입력으로 사용. 수집·메시지/run DB 쓰기 없음.
+        import json as _json
+
+        run_id = replay_run_id
+        snap_path = config.SNAPSHOT_DIR / run_id / "normalized" / "messages.jsonl"
+        if not snap_path.exists():
+            print(f"[REPLAY] 스냅샷 없음: {snap_path} — 스킵")
+            return time.perf_counter() - cycle_started
+        recent_rows = [
+            _json.loads(line)
+            for line in snap_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        inserted_count = 0
+        pruned_count = 0
+        pruned_runs = 0
+        total_count = len(recent_rows)
+        new_cnt = sum(1 for m in recent_rows if _is_new_row(m))
+        print(f"[REPLAY] 스냅샷 메시지={len(recent_rows)}건 (NEW {new_cnt}건, 입력=normalized)")
+    else:
+        source_files = discover_all_sources(now_for_discovery)
+        print(f"[DISCOVERY] matched_files={len(source_files)}")
+
+        snapshot = create_snapshot(source_files, now_for_discovery)
+        print(f"[SNAPSHOT] run_id={snapshot.run_id}")
+        print(f"[SNAPSHOT] copied_files={len(snapshot.files)}")
+
+        messages, parse_errors = normalize_snapshot(snapshot, now)
+
+        write_normalized_messages(snapshot, messages)
+        write_parse_errors(snapshot, parse_errors)
+
+        print(f"[NORMALIZE] messages={len(messages)}")
+        print_source_counts(messages)
+        print(f"[NORMALIZE] parse_errors={len(parse_errors)}")
+
+        run_id = snapshot.run_id
+        first_seen_at = now.isoformat()
+        new_window_cutoff_iso = to_iso_kst(now - timedelta(minutes=config.NEW_WINDOW_MINUTES))
+
+        with connect_db(config.DB_PATH) as conn:
+            inserted_count = insert_messages(
+                conn,
+                messages,
+                run_id=run_id,
+                first_seen_at=first_seen_at,
+            )
+            pruned_count = prune_messages_older_than(conn, db_cutoff_iso)
+            runs_cutoff_iso = to_iso_kst(now - timedelta(days=config.DB_RETENTION_DAYS))
+            pruned_runs = prune_db_runs_older_than(conn, runs_cutoff_iso)
+            recent_rows = fetch_messages_since(conn, db_cutoff_iso, new_window_cutoff_iso)
+            total_count = count_messages(conn)
 
     print(f"[DB] path={config.DB_PATH}")
     print(
@@ -383,7 +409,7 @@ def run_cycle() -> float:
             reporter_count = 0
 
         slack_fields = {
-            "run_id": snapshot.run_id,
+            "run_id": run_id,
             "llm_elapsed_sec": judge_result.elapsed_sec,
             "analyzed_messages": len(recent_rows),
             "evidence_messages": len(evidence_rows),
@@ -403,14 +429,14 @@ def run_cycle() -> float:
                 evidence_messages=evidence_rows,
             )
             # A 채널 추가 발송 조건:
-            #  - 기존 임계(2차 confirmed + reporter_count>=3): 항상 A에 발송
-            #  - 임계 미만(reporter<3): SLACK_TEMP_TO_A=1 '그리고' NOTIFY_ALL=1일 때만 A에 발송
+            #  - 기존 임계(2차 confirmed + reporter_count>=SLACK_CHANNEL_A_MIN_REPORTERS): 항상 A에 발송
+            #  - 임계 미만: SLACK_TEMP_TO_A=1 '그리고' NOTIFY_ALL=1일 때만 A에 발송
             #    (TEMP_TO_A=1 단독으로는 임계 미만이 A로 가지 않음)
             a_by_threshold = (
                 cloud_verify is not None
                 and cloud_verify.get("status") == "ok"
                 and bool(cloud_verify.get("confirmed"))
-                and reporter_count >= 3
+                and reporter_count >= config.SLACK_CHANNEL_A_MIN_REPORTERS
             )
             if (
                 sent_b
@@ -461,31 +487,38 @@ def run_cycle() -> float:
         else:
             print(f"[SLACK] skipped=true reason={decision_note} category={current_category}")
 
-        with connect_db(config.DB_PATH) as conn:
-            insert_local_llm_run(
-                conn,
-                run_id=snapshot.run_id,
-                window_start=to_iso_kst(now - timedelta(minutes=config.NEW_WINDOW_MINUTES)),
-                window_end=to_iso_kst(now),
-                context_window_start=db_cutoff_iso,
-                message_count=len(recent_rows),
-                new_message_count=inserted_count,
-                raw_response=storage_text,
-                status=judge_result.status,
-                error=judge_result.error,
-                created_at=to_iso_kst(datetime.now(KST)),
-                parsed_response=judge_result.parsed_response,
-                has_possible_issue_override=has_possible_issue_override,
-                llm_meta=judge_result.llm_meta,
-                cloud_verify=cloud_verify,
-            )
-        print("[LLM] saved_to=local_llm_runs")
+        if replay_run_id:
+            print("[REPLAY] DB 기록 생략(insert_local_llm_run 스킵 · 과거 run 보존)")
+        else:
+            with connect_db(config.DB_PATH) as conn:
+                insert_local_llm_run(
+                    conn,
+                    run_id=run_id,
+                    window_start=to_iso_kst(now - timedelta(minutes=config.NEW_WINDOW_MINUTES)),
+                    window_end=to_iso_kst(now),
+                    context_window_start=db_cutoff_iso,
+                    message_count=len(recent_rows),
+                    new_message_count=inserted_count,
+                    raw_response=storage_text,
+                    status=judge_result.status,
+                    error=judge_result.error,
+                    created_at=to_iso_kst(datetime.now(KST)),
+                    parsed_response=judge_result.parsed_response,
+                    has_possible_issue_override=has_possible_issue_override,
+                    llm_meta=judge_result.llm_meta,
+                    cloud_verify=cloud_verify,
+                    cloud_reporter_count=reporter_count,
+                )
+            print("[LLM] saved_to=local_llm_runs")
         print(f"[RUN] now={now.strftime('%Y-%m-%d %H:%M:%S KST')}")
     else:
         print("[LLM] skipped: LLM_JUDGE_ENABLED=0")
 
-    deleted_snapshots = cleanup_old_snapshots()
-    print(f"[CLEANUP] deleted_snapshots={deleted_snapshots}")
+    if replay_run_id:
+        print("[CLEANUP] skipped (replay — 스냅샷 보존)")
+    else:
+        deleted_snapshots = cleanup_old_snapshots()
+        print(f"[CLEANUP] deleted_snapshots={deleted_snapshots}")
 
     elapsed_sec = time.perf_counter() - cycle_started
     print(f"[CYCLE] elapsed_sec={elapsed_sec:.2f}")
@@ -520,15 +553,34 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run one cycle and exit.",
     )
+    parser.add_argument(
+        "--replay",
+        nargs="*",
+        metavar="RUN_ID",
+        help="과거 run 스냅샷(normalized)으로 재실행. 실제 발송 O, 메시지/run DB 쓰기 X. 여러 개 가능.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    # stdout/stderr를 콘솔+일별 로그파일(data/logs/, 30일 자동삭제)에 동시 기록.
+    logfile = setup_file_logging()
+    if logfile:
+        print(f"[LOG] file logging → {logfile} (일별 로테이션, 30일 보관)")
     args = parse_args()
     # P1-1: schema/마이그레이션은 프로세스 시작 시 1회만 적용.
     # run_cycle 내부에서 매 사이클마다 init_db 하던 호출을 제거했다.
     with connect_db(config.DB_PATH) as conn:
         init_db(conn)
+    # 과거 스냅샷 재실행 모드: 루프/Slack 상호작용 서버 없이 지정 run만 재실행하고 종료.
+    if args.replay is not None:
+        if not args.replay:
+            print("[REPLAY] run_id를 1개 이상 지정하세요: python main.py --replay <run_id> [...]")
+            return
+        for rid in args.replay:
+            run_cycle(replay_run_id=rid)
+        print("[REPLAY] 완료")
+        return
     # Slack 상호작용(음소거 버튼) 수신: socket(WebSocket) 또는 http(기존 서버+cloudflared)
     if config.SLACK_INTERACTION_MODE == "socket":
         start_socket_mode_client()

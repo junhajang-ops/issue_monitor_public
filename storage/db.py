@@ -62,6 +62,10 @@ def _ensure_local_llm_run_columns(conn: sqlite3.Connection) -> None:
         "cloud_prompt_tokens": "INTEGER",
         "cloud_completion_tokens": "INTEGER",
         "cloud_total_tokens": "INTEGER",
+        # 2차 응답 전체 JSON(confirmed·reason·reporter_message_ids·evidence_message_ids 등 사후 복원용)
+        "cloud_raw_json": "TEXT",
+        # 2차가 카운트한 고유 신고자 수(A 채널 임계 SLACK_CHANNEL_A_MIN_REPORTERS 판단 근거). 발송 시점 계산값 보존.
+        "cloud_reporter_count": "INTEGER",
     }
     for name, column_type in columns.items():
         if name not in existing:
@@ -182,19 +186,16 @@ def prune_messages_older_than(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     return conn.total_changes - before
 
 
-# 판정 이력·알림 테이블의 (테이블, 시간 컬럼) 매핑. created_at/sent_at/last_seen_at 기준.
+# 판정 이력 테이블의 (테이블, 시간 컬럼) 매핑. created_at 기준.
 _DB_RETENTION_TABLES = (
     ("local_llm_runs", "created_at"),
-    ("cloud_llm_runs", "created_at"),
-    ("alerts", "sent_at"),
-    ("issue_states", "last_seen_at"),
 )
 
 
 def prune_db_runs_older_than(conn: sqlite3.Connection, cutoff_iso: str) -> int:
     """판정 이력·알림 테이블에서 보관 기한(cutoff)보다 오래된 행을 삭제한다.
 
-    - local_llm_runs/cloud_llm_runs: created_at, alerts: sent_at, issue_states: last_seen_at 기준.
+    - local_llm_runs: created_at 기준.
     - messages는 working set이라 별도(prune_messages_older_than)로 관리한다.
     - SQLite는 DELETE 후 파일이 자동 축소되지 않지만, retention이 일정하면 빈 공간이
       재사용되어 파일 크기가 평형을 이룬다(즉시 축소가 필요하면 VACUUM 수동 실행).
@@ -282,6 +283,7 @@ def insert_local_llm_run(
     has_possible_issue_override: bool | None = None,
     llm_meta: Mapping[str, Any] | None = None,
     cloud_verify: Mapping[str, Any] | None = None,
+    cloud_reporter_count: int | None = None,
 ) -> None:
     """Persist one local Ollama judgment result for later inspection."""
     parsed = parsed_response or {}
@@ -310,10 +312,6 @@ def insert_local_llm_run(
             context_window_start,
             message_count,
             new_message_count,
-            local_llm_score,
-            rule_score,
-            source_correlation_score,
-            candidate_score,
             has_possible_issue,
             llm_prompt_tokens,
             llm_cached_prompt_tokens,
@@ -334,9 +332,11 @@ def insert_local_llm_run(
             cloud_verify_reason,
             cloud_prompt_tokens,
             cloud_completion_tokens,
-            cloud_total_tokens
+            cloud_total_tokens,
+            cloud_raw_json,
+            cloud_reporter_count
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -345,10 +345,6 @@ def insert_local_llm_run(
             context_window_start,
             message_count,
             new_message_count,
-            None,
-            None,
-            None,
-            None,
             has_possible_issue_int,
             token_usage["prompt_tokens"],
             token_usage["cached_prompt_tokens"],
@@ -370,6 +366,8 @@ def insert_local_llm_run(
             cv.get("prompt_tokens"),
             cv.get("completion_tokens"),
             cv.get("total_tokens"),
+            json.dumps(cv, ensure_ascii=False) if cv else None,
+            cloud_reporter_count,
         ),
     )
     conn.commit()
