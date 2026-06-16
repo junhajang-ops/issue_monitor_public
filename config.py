@@ -68,14 +68,14 @@ DB_RETENTION_DAYS = int(os.getenv("DB_RETENTION_DAYS", "30"))
 KAKAO_BASE_DIR = Path(
     os.getenv(
         "KAKAO_BASE_DIR",
-        "data/kakao_logs/rooms",  # 실제 경로는 .env의 KAKAO_BASE_DIR로 지정
+        "C:/Users/user/Documents/XuanZhi9/Pictures/kakao_logs/llm/rooms",
     )
 )
 
 INGAME_BASE_DIR = Path(
     os.getenv(
         "INGAME_BASE_DIR",
-        "data/ingame_output",  # 실제 경로는 .env의 INGAME_BASE_DIR로 지정
+        "C:/Users/user/Desktop/playwright_chat_reader/output",
     )
 )
 

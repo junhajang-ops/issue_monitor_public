@@ -4,14 +4,13 @@
 
 $ErrorActionPreference = 'Continue'
 
-# 아래 경로는 각자 환경에 맞게 수정하세요 (예시 placeholder).
-$LlamaExe   = 'C:\path\to\llama-cpp\llama-server.exe'
-$LlamaModel = 'C:\path\to\llama-cpp\Qwen3.5-9B-Q4_K_M.gguf'
-$LlamaDir   = 'C:\path\to\llama-cpp'
-$PwDir      = 'C:\path\to\playwright_chat_reader'
-$PwPython   = 'C:\path\to\playwright_chat_reader\.venv\Scripts\python.exe'
-$ImDir      = 'C:\path\to\issue_monitor'
-$ImPython   = 'C:\path\to\issue_monitor\.venv\Scripts\python.exe'
+$LlamaExe   = 'C:\Users\user\Desktop\llama-cpp\llama-server.exe'
+$LlamaModel = 'C:\Users\user\Desktop\llama-cpp\Qwen3.5-9B-Q4_K_M.gguf'
+$LlamaDir   = 'C:\Users\user\Desktop\llama-cpp'
+$PwDir      = 'C:\Users\user\Desktop\playwright_chat_reader'
+$PwPython   = 'C:\Users\user\Desktop\playwright_chat_reader\.venv\Scripts\python.exe'
+$ImDir      = 'C:\Users\user\Desktop\issue_monitor'
+$ImPython   = 'C:\Users\user\Desktop\issue_monitor\.venv\Scripts\python.exe'
 $HealthUrl  = 'http://127.0.0.1:8080/health'
 
 function Test-PortListening([int]$port) {
