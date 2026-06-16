@@ -20,10 +20,7 @@ from parsers.kakao_parser import parse_kakao_file  # noqa: E402
 
 KROOMS = Path(config.KAKAO_BASE_DIR)
 INGAME = Path(config.INGAME_BASE_DIR) / "llm_messages.jsonl"
-KFILES = [
-    ("kakao_a", "모바일게임_원조_커뮤니티(비번).txt"),
-    ("kakao_b", "모바일게임_정보&소통방_ver.2.txt"),
-]
+KFILES = [tuple(item) for item in getattr(config, "KAKAO_REPLAY_FILES", [])]
 
 # llm_replay 인자 없이 실행할 때의 회귀 세트(과거 대표 run 7종).
 RUNS = [

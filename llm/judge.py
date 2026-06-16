@@ -27,7 +27,7 @@ JUDGE_RESPONSE_SCHEMA = {
 }
 
 JUDGE_SYSTEM_PROMPT = """
-너는 모바일 게임 `모바일 게임`의 운영 알림 필터다.
+너는 모바일 게임의 운영 알림 필터다.
 반드시 유효한 JSON 객체 1개만 출력한다.
 허용 필드는 정확히 `should_alert`, `content`, `evidence_message_ids` 3개뿐이다.
 `should_alert` 값은 반드시 JSON boolean `true` 또는 `false`다. 문자열 "true", "false"는 금지다.
@@ -40,7 +40,7 @@ JUDGE_SYSTEM_PROMPT = """
 """.strip()
 
 JUDGE_PROMPT_TEMPLATE = """
-너는 모바일 게임 `모바일 게임`의 커뮤니티/인게임 채팅을 감시하는 운영 알림 필터다.
+너는 모바일 게임의 커뮤니티/인게임 채팅을 감시하는 운영 알림 필터다.
 목표는 "운영자가 지금 바로 확인해야 하는 크리티컬 이슈"만 알림으로 올리는 것이다.
 
 입력에는 최근 10분 이내 메시지들이 시간순으로 제공된다.

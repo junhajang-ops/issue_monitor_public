@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -83,27 +84,36 @@ INGAME_BASE_DIR = Path(
 # 카카오톡 대상 방 설정
 # =========================
 
-KAKAO_SOURCES = [
-    {
-        "source_id": "kakao_a",
-        "room_name": "모바일게임 원조 커뮤니티(비번)",
-        "filename_contains": [
-            "모바일게임_원조_커뮤니티",
-            "원조_커뮤니티",
-            "원조",
+# 방 이름(room_name)·파일명 토큰(filename_contains)은 환경마다 다르고 민감할 수 있어
+# 로컬 전용 JSON(kakao_sources.local.json, gitignore)에서 읽는다. 파일이 없으면 아래 placeholder를 사용한다.
+# 실제 매칭(discovery._room_matches_by_content)은 room_name이 카톡 export 파일의 room= 헤더와 정확히 일치해야 하므로,
+# 각자 환경에 맞게 kakao_sources.local.json을 작성해야 한다. 스키마는 README/.local.json 예시 참고.
+def _load_kakao_config() -> dict:
+    path = Path(os.getenv("KAKAO_SOURCES_FILE", str(BASE_DIR / "kakao_sources.local.json")))
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):  # 레거시: 소스 리스트만 있는 형태도 허용
+                data = {"sources": data, "replay_files": []}
+            return data
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] failed to load KAKAO sources from {path}: {exc}")
+    return {
+        "sources": [
+            {"source_id": "kakao_a", "room_name": "커뮤니티 방 이름 A", "filename_contains": ["커뮤니티A"]},
+            {"source_id": "kakao_b", "room_name": "커뮤니티 방 이름 B", "filename_contains": ["커뮤니티B"]},
         ],
-    },
-    {
-        "source_id": "kakao_b",
-        "room_name": "모바일게임 정보&소통방 ver.2",
-        "filename_contains": [
-            "모바일게임_정보",
-            "정보&소통방",
-            "정보_소통방",
-            "정보",
+        "replay_files": [
+            ["kakao_a", "커뮤니티A.txt"],
+            ["kakao_b", "커뮤니티B.txt"],
         ],
-    },
-]
+    }
+
+
+_KAKAO_CONFIG = _load_kakao_config()
+KAKAO_SOURCES = _KAKAO_CONFIG.get("sources", [])
+# llm_replay/llm_check가 원본 재구성 시 참조하는 실제 파일명 목록.
+KAKAO_REPLAY_FILES = _KAKAO_CONFIG.get("replay_files", [])
 
 # =========================
 # 인게임 대상 파일 설정
