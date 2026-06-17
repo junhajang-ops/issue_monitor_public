@@ -1,0 +1,11 @@
+# 줄바꿈 정규화 — repo는 항상 LF로 저장(크로스플랫폼 일관성, sync 노이즈 제거)
+* text=auto eol=lf
+
+# Windows 스크립트는 CRLF 유지(cmd/PowerShell 호환)
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 바이너리(혹시 추적될 경우) 정규화 금지
+*.png binary
+*.gguf binary
+*.sqlite3 binary
