@@ -15,40 +15,43 @@ import config
 JUDGE_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "should_alert": {"type": "boolean"},
+        "issue_detected": {"type": "boolean"},
         "content": {"type": "string"},
         "evidence_message_ids": {
             "type": "array",
             "items": {"type": "integer"},
         },
     },
-    "required": ["should_alert", "content", "evidence_message_ids"],
+    "required": ["issue_detected", "content", "evidence_message_ids"],
     "additionalProperties": False,
 }
 
 JUDGE_SYSTEM_PROMPT = """
-너는 모바일 게임의 운영 알림 필터다.
+너는 모바일 게임 운영 이슈의 1차 탐지기다.
+역할은 "운영 이슈 신호가 하나라도 있는지"를 넓게 잡아내는 것이다(신고 인원수·임계·심각도는 판단하지 않는다).
 반드시 유효한 JSON 객체 1개만 출력한다.
-허용 필드는 정확히 `should_alert`, `content`, `evidence_message_ids` 3개뿐이다.
-`should_alert` 값은 반드시 JSON boolean `true` 또는 `false`다. 문자열 "true", "false"는 금지다.
+허용 필드는 정확히 `issue_detected`, `content`, `evidence_message_ids` 3개뿐이다.
+`issue_detected` 값은 반드시 JSON boolean `true` 또는 `false`다. 문자열 "true", "false"는 금지다.
 `content` 값은 줄바꿈 없는 한국어 한 줄 문자열이다.
-`evidence_message_ids` 값은 정수(integer) 배열이다. should_alert 결론의 근거가 된 입력 메시지의 `idx`만 담는다.
-  - should_alert=true일 때: 신고 근거가 된 메시지 idx들을 모두 담는다.
-  - should_alert=false일 때: 빈 배열 [].
+`evidence_message_ids` 값은 정수(integer) 배열이다. 이슈 신호의 근거가 된 입력 메시지의 `idx`만 담는다.
+  - issue_detected=true일 때: 이슈 신호 근거가 된 메시지 idx들을 모두 담는다.
+  - issue_detected=false일 때: 빈 배열 [].
 절대 `classification`, `primary_topic`, `score`, `category`, `severity`, `reason`, 중첩 객체, 마크다운을 출력하지 마라.
 판단 로직과 카테고리 기준은 user 메시지의 규칙을 따른다.
 """.strip()
 
 JUDGE_PROMPT_TEMPLATE = """
-너는 모바일 게임의 커뮤니티/인게임 채팅을 감시하는 운영 알림 필터다.
-목표는 "운영자가 지금 바로 확인해야 하는 크리티컬 이슈"만 알림으로 올리는 것이다.
+너는 모바일 게임의 커뮤니티/인게임 채팅을 감시하는 운영 이슈 1차 탐지기다.
+목표는 "운영 이슈로 의심되는 신호"가 하나라도 있으면 빠짐없이 잡아내는 것이다(recall 우선).
+신고 인원수·임계·심각도는 판단하지 않는다.
+너는 오직 "이슈 신호가 있는가/없는가"만 판정한다.
 
 입력에는 최근 10분 이내 메시지들이 시간순으로 제공된다.
 각 메시지는 `source_id`(출처), `timestamp`(시간), `sender`(작성자), `text`(내용)를 가진다.
 
 == 1단계: 카테고리 파악 ==
 
-아래 4개 카테고리 중 메시지에 해당하는 이슈를 파악하라.
+아래 5개 카테고리 중 메시지에 해당하는 이슈를 파악하라.
 이슈가 없으면 [일반 대화]다. 복수 카테고리가 감지되면 가장 심각한 카테고리의 기준을 적용한다.
 
 [서버/접속 장애]
@@ -70,7 +73,13 @@ JUDGE_PROMPT_TEMPLATE = """
 
 세부 유형:
 - 계정 문제: 재화/아이템 소실, 계정 롤백, 데이터 초기화, 계정 접근 이상
-- 운영 리스크: 버그 악용, 비정상 재화 획득, 복사/중복 지급, 이벤트·보상 전체 오지급, 불법 프로그램 확산, 시스템 기능 오류
+- 운영 리스크: 버그 악용, 비정상 재화 획득, 복사/중복 지급, 이벤트·보상 전체 오지급, 시스템 기능 오류
+  (핵·매크로 '현재 확산 정황'은 [계정/운영 리스크]가 아닌 [핵 신고]로 분류)
+
+[핵 신고]
+다른 유저의 핵·매크로·외부 불법 프로그램 사용을 지금 목격·신고·의심하는 발화.
+"쟤 핵쓴다", "핵 같다", "매크로 쓰는 것 같다" 등 현재 진행형 신고에 한정.
+[핵 신고] vs [계정/운영 리스크] 구분: 외부 불법 프로그램 사용 의심·신고 = [핵 신고] / 버그 악용·어뷰징·계정 도용 = [계정/운영 리스크].
 
 [일반 대화]
 공략·스펙 상담, 서버 번호 대화, 연합 모집, 쿠폰 위치 질문, 과금 효율 평가,
@@ -92,9 +101,10 @@ JUDGE_PROMPT_TEMPLATE = """
 "내가 결제/플레이한 결과 피해가 발생했다"는 신고여야 한다.
 
 [계정/운영 리스크 - 세부 유형: 운영 리스크]는 피해 확정 표현이 없어도 된다.
-서로 다른 사용자 2명 이상이 같은 기능/이벤트/보상 시스템에 대해 "이상하다", "안 된다",
-"버그 같다", "동작이 이상했다"처럼 동일 현상 이상 징후를 보고하면 운영 리스크 신고로 센다.
-단, 확률 불만, 스펙 부족, 보상 품질 불만, 단순 난이도 한탄은 동일 인원이 많아도 [일반 대화]다.
+누군가 같은 기능/이벤트/보상 시스템에 대해 "이상하다", "안 된다",
+"버그 같다", "동작이 이상했다"처럼 이상 징후를 보고하면 운영 리스크 신고 신호로 본다.
+(신고 인원이 1명뿐이어도 신호로 본다 — 인원수는 판단하지 않는다.)
+단, 확률 불만, 스펙 부족, 보상 품질 불만, 단순 난이도 한탄은 [일반 대화]다.
 
 아래는 신고가 아니라 [일반 대화]다:
 
@@ -115,49 +125,40 @@ JUDGE_PROMPT_TEMPLATE = """
 신고로 묶는 표현 ([계정/운영 리스크] - 세부 유형: 운영 리스크):
 - "버그로 보상 안 들어옴", "이벤트 보상 획득이 안 됨", "획득 버튼이 미활성화됨"
 - "신수 융합 뭔가 이상한데", "나도 신수 융합 쪽에서 이상했어",
-  "같은 기능이 이상하게 동작함", "버그 같은데"처럼 동일 기능 이상을 2명 이상이 말함
+  "같은 기능이 이상하게 동작함", "버그 같은데"처럼 기능 이상을 말함
 - "복사됨", "중복 지급됨", "비정상 지급됨", "특정 조작으로 재화가 비정상 처리됨"
-- "매크로/핵/불법 프로그램을 지금 쓰고 있음"처럼 현재 확산 또는 사용 정황이 있는 신고
 
-== 2단계: 카테고리별 알림 기준 적용 ==
+신고로 묶는 표현 ([핵 신고]):
+- "쟤 핵쓴다", "핵 같다", "저 사람 핵 아님?", "매크로 쓰는 것 같다"처럼 지금 목격·의심하는 현재형
+- "핵쟁이 있다", "불법 프로그램 쓰는 애 있음"처럼 현재 확산 정황 신고
 
-[서버/접속 장애] 기준:
-- 최근 10분 내 서로 다른 사용자 2명 이상이
-  동일한 플레이 차단 현상을 신고하면 should_alert=true
-- 단일 사용자 신고는 should_alert=false
+== 2단계: 이슈 신호 판정 (임계·인원수 없음) ==
 
-[결제 문제] 기준:
-- 서버 특성 상 간간히 발생하는 알려진 현상이며, 고객센터 1:1 문의로 복구 처리 가능
-- 최근 10분 내 서로 다른 사용자 3명 이상이 동일 유형의 피해를 신고해야만 should_alert=true
-- 2명 이하 신고는 피해가 아무리 명확해 보여도 반드시 should_alert=false
+위 카테고리 중 [서버/접속 장애], [결제 문제], [계정/운영 리스크], [핵 신고]에
+해당하는 신고가 **하나라도** 있으면 issue_detected=true.
 
-[계정/운영 리스크] 기준:
-- 서로 다른 사용자 2명 이상에서 동일 현상이 확인되면 should_alert=true
-- 단일 사용자 신고는 반드시 should_alert=false
-- content에는 세부 유형을 "세부 유형: 계정 문제", "세부 유형: 운영 리스크" 또는
-  "세부 유형: 혼합" 중 하나로 명시한다
+- 신고 인원수를 세지 않는다. 1명만 신고해도 issue_detected=true다(몇 명인지·임계는 판단하지 않는다).
+- 인원이 적다는 이유로 issue_detected=false로 내리거나 카테고리를 [일반 대화]로 강등하는 것을 금지한다.
+- [핵 신고]는 시제 규칙만 적용: "지금·방금·현재 목격·신고"인 현재형 신고만 신호로 본다.
+  과거·전언·사후 푸념("핵있었나보네", "핵쟁이 극혐")은 신호가 아니다.
+- [계정/운영 리스크]는 content에 세부 유형("세부 유형: 계정 문제", "세부 유형: 운영 리스크",
+  "세부 유형: 혼합" 중 하나)을 명시한다.
+- [일반 대화]만 있고 위 4개 이슈 신호가 전혀 없으면 issue_detected=false.
 
-[일반 대화] 기준:
-- 항상 should_alert=false
+== 이슈 신호 수집 절차 ==
 
-== 판단 원칙 ==
+[결제 문제], [계정/운영 리스크], [서버/접속 장애] 또는 [핵 신고]로 분류한 신고 메시지가 있으면:
 
-== 카운팅 절차 ==
+1. 해당 신고 메시지의 idx를 모두 모아 evidence_message_ids에 담는다.
+2. issue_detected=true로 둔다(인원수 비교·임계는 판단하지 않는다).
+3. content에 어떤 카테고리의 어떤 신호가 감지됐는지 1줄로 요약한다(신고 인원수는 적지 마라).
 
-[결제 문제], [계정/운영 리스크] 또는 [서버/접속 장애]로 분류했다면, 다음 절차로 신고 인원을 센다:
-
-1. 신고 메시지의 sender 필드를 모두 나열한다.
-2. 중복 sender를 제거해 고유 사용자 집합을 만든다.
-3. 집합 크기를 세어 카테고리 기준(결제 3명, 계정/운영 리스크 2명, 장애 2명)과 비교한다.
-4. content에 신고자 수를 "서로 다른 사용자 N명"으로 명시한다.
-
-같은 sender가 여러 번 신고해도 1명으로 센다. 출처(source_id)는 카운팅 단위가 아니라
-신고가 한 채널에 집중됐는지 분산됐는지 확인용이다.
+출처(source_id)는 판정 단위가 아니라 신고가 한 채널에 집중됐는지 분산됐는지 확인용이다.
 
 == 공지/봇 메시지 처리 ==
 
 공식 공지나 봇 자동 안내(예: "공지게시판 글은 3개이니...", 점검 일정 안내, 보상 지급 안내)는
-사용자 신고가 아니다. 다음 특징을 가진 메시지는 배경 정보로만 사용하고 신고 카운팅에서 제외한다:
+사용자 신고가 아니다. 다음 특징을 가진 메시지는 배경 정보로만 사용하고 이슈 신호에서 제외한다:
 
 - 구조화된 긴 글 (용어 정의, 항목 나열, 순위 표 등)
 - "공지", "점검", "안내", "보상 지급" 키워드 포함
@@ -165,13 +166,12 @@ JUDGE_PROMPT_TEMPLATE = """
 
 == 기타 판단 원칙 ==
 
-- 반드시 "카테고리 확정 → 해당 기준 적용" 순서를 따른다
-- 카테고리가 [결제 문제]로 확정되면 신고 인원이 3명 미만인 한 true로 올리지 않는다
-- 카테고리가 [계정/운영 리스크]로 확정되면 신고 인원이 2명 미만인 한 true로 올리지 않는다
-- 애매하면 should_alert=true로 둔다.
-  이 1차 판정 뒤에 2차 정밀 검증(클라우드)이 별도로 수행되어 오탐을 걸러내므로,
-  신고인지 의견인지, 시제·방치·경향 때문에 신고로 셀지, 임계를 충족하는지가 확신이 서지 않으면
-  false가 아니라 true로 결정해 2차로 넘긴다(1차는 놓치지 않는 것을 우선한다).
+- 반드시 "카테고리 확정 → 이슈 신호 유무" 순서를 따른다.
+- 신고 인원이 적다는 이유로(예: 1명뿐) issue_detected=false로 내리거나
+  카테고리를 [일반 대화]로 강등하지 마라. 너는 오직 "이슈 신호가 있는가"만 본다.
+- 애매하면 issue_detected=true로 둔다.
+  신고인지 의견인지, 시제·방치·경향 때문에 신고로 볼지가 확신이 서지 않으면
+  false가 아니라 true로 결정한다(놓치지 않는 것을 우선한다).
 - "나만 그런가", "나만 심한가", "저만 이런가요?"처럼 본인이 지금 겪는 증상을 확인·의심하는 표현은
   '나만'이라는 이유로 기기·개인 문제로 단정해 제외하지 말고 현재 진행형 신고로 센다.
 
@@ -179,26 +179,26 @@ JUDGE_PROMPT_TEMPLATE = """
 
 출력은 반드시 유효한 JSON 객체 1개만 작성하라.
 마크다운, 코드블록, 설명 문장, 추가 필드를 절대 출력하지 마라.
-허용 필드는 `should_alert`(boolean), `content`(줄바꿈 없는 한국어 한 줄 문자열),
+허용 필드는 `issue_detected`(boolean), `content`(줄바꿈 없는 한국어 한 줄 문자열),
 `evidence_message_ids`(정수 배열) 3개다.
 
 `content` 작성 방식:
-- should_alert=true일 때: 카테고리명, 즉시 확인이 필요한 이유, 근거 메시지의 시간/출처/작성자 수, 다음 확인 행동을 3~5문장으로 쓴다.
-- should_alert=false일 때: 감지된 카테고리, 최근 10분 메시지의 주요 대화 유형, 알림 대상이 아닌 이유를 3~5문장으로 쓴다.
-- 작성자명을 나열하지 않는다. 필요하면 "서로 다른 사용자 2명"처럼 요약한다.
+- issue_detected=true일 때: 카테고리명, 감지된 이슈 신호, 근거 메시지의 시간/출처/작성자 수를 3~5문장으로 쓴다.
+- issue_detected=false일 때: 감지된 주요 대화 유형과 이슈 신호가 없다고 본 이유를 3~5문장으로 쓴다.
+- 작성자명·신고 인원수를 쓰지 않는다. content에는 감지된 이슈와 카테고리만 적고, 검증 절차 같은 메타 설명은 넣지 마라.
 
 `evidence_message_ids` 작성 방식:
 - 입력 메시지 각 항목의 `idx` 정수만 사용한다. timestamp나 sender, text를 넣지 마라.
-- should_alert=true일 때: 1단계 카테고리 분류에서 신고로 인정한 모든 메시지의 idx를 담는다.
+- issue_detected=true일 때: 카테고리 분류에서 신고로 인정한 모든 메시지의 idx를 담는다.
   예) 결제 후 미지급 신고 메시지 4개(idx 12, 25, 47, 88) → [12, 25, 47, 88]
-- should_alert=false일 때: 빈 배열 [].
+- issue_detected=false일 때: 빈 배열 [].
 - 일반 대화나 의견·잡담 메시지의 idx는 절대 넣지 마라.
 
 출력 예시:
-{"should_alert":false,"content":"카테고리: 일반 대화. 최근 10분 메시지는 공략 질문과 스펙 상담 중심이며, 접속 장애나 결제/계정 피해처럼 즉시 확인할 이슈는 확인되지 않는다. 세 출처 모두 정상적인 게임 플레이 관련 대화다.","evidence_message_ids":[]}
-{"should_alert":true,"content":"카테고리: 서버/접속 장애. 점검 종료 후 접속 불가 의심. 최근 10분 내 서로 다른 사용자 4명이 로그인 실패와 반복 튕김을 보고했다. kakao_a와 ingame에서 확인된다. 서버 상태, 점검 종료 처리, 접속 로그를 우선 확인하라.","evidence_message_ids":[3,17,42,58,89]}
-{"should_alert":true,"content":"카테고리: 결제 문제. 결제 후 미지급 신고가 서로 다른 사용자 3명에게서 확인됨(상품 종류는 시즌패스, 월정액, 스타터팩으로 다르지만 모두 결제 후 미지급 유형). 10분 내 단일 출처(kakao_a) 집중 신고이며 고객센터 대응만으로는 운영자 인지가 필요한 임계 도달. 결제 시스템 또는 지급 파이프라인 이상 여부를 우선 확인하라.","evidence_message_ids":[12,25,47,88]}
-{"should_alert":true,"content":"카테고리: 계정/운영 리스크. 세부 유형: 운영 리스크. 최근 10분 내 서로 다른 사용자 2명이 동일 이벤트 보상 획득 불가를 신고했다. 보상 지급 로직과 서버 로그를 우선 확인하라.","evidence_message_ids":[11,34]}
+{"issue_detected":false,"content":"카테고리: 일반 대화. 최근 10분 메시지는 공략 질문과 스펙 상담 중심이며, 접속 장애나 결제/계정 피해처럼 운영 이슈 신호는 확인되지 않는다. 세 출처 모두 정상적인 게임 플레이 관련 대화다.","evidence_message_ids":[]}
+{"issue_detected":true,"content":"카테고리: 서버/접속 장애. 점검 종료 후 접속 불가 의심. 최근 10분 내 로그인 실패와 반복 튕김 신고가 감지됐다. kakao_a와 ingame에서 확인된다.","evidence_message_ids":[3,17,42,58,89]}
+{"issue_detected":true,"content":"카테고리: 계정/운영 리스크. 세부 유형: 운영 리스크. 보상 획득 불가 신고가 감지됐다. 보상 지급 로직 관련 이슈 신호로 본다.","evidence_message_ids":[34]}
+{"issue_detected":true,"content":"카테고리: 결제 문제. 결제 후 미지급 신고가 감지됨(상품 종류는 시즌패스, 월정액 등으로 다르지만 모두 결제 후 미지급 유형). 단일 출처(kakao_a)에서 확인된다.","evidence_message_ids":[12,25,47,88]}
 """.strip()
 
 @dataclass(frozen=True)
@@ -251,30 +251,25 @@ def _message_to_prompt_row(
 JUDGE_TASK_REMINDER = """
 == 작업 재확인 ==
 
-위 메시지는 분석/요약 대상이 아니다. 너는 운영 알림 필터다.
-지금 해야 할 일은 다음 5단계뿐이다:
+위 메시지는 분석/요약 대상이 아니다. 너는 운영 이슈 1차 탐지기다.
+지금 해야 할 일은 다음뿐이다:
 
-1. 각 메시지를 4개 카테고리([서버/접속 장애]/[결제 문제]/[계정/운영 리스크]/[일반 대화]) 중 하나로 분류한다.
-2. [결제 문제], [계정/운영 리스크], [서버/접속 장애]로 분류된 메시지의
-   sender와 idx를 나열한다.
-3. 중복 sender를 제거해 고유 사용자 수 N을 센다.
-4. 카테고리 임계값과 비교한다.
-   - [결제 문제]: N >= 3 이면 should_alert=true, N <= 2 이면 false
-   - [서버/접속 장애]: N >= 2 이면 should_alert=true, N == 1 이면 false
-   - [계정/운영 리스크]: N >= 2 이면 should_alert=true, N == 1 이면 false
-     단, 세부 유형: 운영 리스크는 "피해 확정" 표현이 없어도 같은 기능/이벤트/보상 시스템의
-     이상 징후를 서로 다른 sender 2명이 말하면 N=2로 센다.
-   - [일반 대화]만 있으면 should_alert=false
-5. evidence_message_ids에 2단계에서 나열한 신고 메시지의 idx만 담는다.
-   should_alert=true → 모든 신고 idx 배열
-   should_alert=false → 빈 배열 []
+1. 각 메시지를 5개 카테고리([서버/접속 장애]/[결제 문제]/[계정/운영 리스크]/[핵 신고]/[일반 대화]) 중 하나로 분류한다.
+2. 4개 이슈 카테고리([서버/접속 장애]/[결제 문제]/[계정/운영 리스크]/[핵 신고]) 신고가
+   하나라도 있으면 issue_detected=true.
+   - 신고 인원수를 세지 않는다. 1명만 신고해도 true다(인원·임계는 판단하지 않는다).
+   - 인원이 적다는 이유로 issue_detected=false로 내리거나 [일반 대화]로 강등하지 마라.
+   - [핵 신고]는 현재형 신고만 신호로 본다(과거·전언·사후 푸념 제외).
+   - [일반 대화]만 있고 이슈 신호가 전혀 없으면 issue_detected=false.
+3. evidence_message_ids에 신고로 인정한 메시지의 idx만 담는다.
+   issue_detected=true → 모든 신고 idx 배열
+   issue_detected=false → 빈 배열 []
    일반 대화/의견/잡담 idx는 절대 넣지 마라.
 
 "결제 후 미지급"은 결제 상품 종류(시즌패스/월정액/스타터팩 등)와 무관하게 모두 같은 유형이다.
-서로 다른 sender 3명이 결제 후 미지급을 신고했다면 should_alert=true다.
 
 출력은 반드시 JSON 1개만. 다른 문장, 마크다운, 요약문 금지.
-허용 필드: should_alert(boolean), content(한국어 한 줄 문자열), evidence_message_ids(정수 배열) 3개.
+허용 필드: issue_detected(boolean), content(한국어 한 줄 문자열), evidence_message_ids(정수 배열) 3개.
 """.strip()
 
 
@@ -384,6 +379,8 @@ def build_prompt(messages: Iterable[Any]) -> str:
     win = config.CONTEXT_WINDOW_MINUTES
     template = JUDGE_PROMPT_TEMPLATE.replace("10분", f"{win}분")
     reminder = JUDGE_TASK_REMINDER.replace("10분", f"{win}분")
+    # 1차는 임계를 판단하지 않으므로(이슈 신호 유무만) 카테고리별 임계(MIN_*) 주입은 제거됐다.
+    # 신고자 임계(SLACK_CHANNEL_MIN_REPORTERS 등)는 2차 검증 + main.py Python 교차검증에서만 적용한다.
 
     sections = [template]
     # 키워드 사전 스크리닝(민감도 강화): 후보가 있으면 적극적으로 신고 검토하도록 유도.
@@ -396,7 +393,7 @@ def build_prompt(messages: Iterable[Any]) -> str:
             f"후보 idx: {cand_idx}\n"
             "이 후보들은 본인이 '이미 해소됐다'고 명시했거나 명백히 게임과 무관한 비유·잡담인 경우를 "
             "제외하고는 현재 진행형 신고로 적극 인정하라. 신고로 셀지 의견으로 뺄지 애매하면 신고로 센다.\n"
-            "2차 정밀 검증(클라우드)이 오탐을 별도로 걸러내므로, 1차는 놓치지 않는 것(recall)을 최우선으로 한다."
+            "1차는 놓치지 않는 것(recall)을 최우선으로 한다."
         )
     sections.append("아래 입력 메시지를 기준으로 판단하라.")
     sections.append(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
@@ -857,12 +854,16 @@ def normalize_judge_response(candidate: dict[str, Any] | None) -> tuple[dict[str
     if candidate is None:
         return None, "response did not contain a valid JSON object"
 
-    if "error" in candidate and "should_alert" not in candidate:
+    if "error" in candidate and "issue_detected" not in candidate:
         return None, f"model returned error dict: {candidate.get('error')}"
 
-    should_alert = _coerce_bool(candidate.get("should_alert"))
-    if should_alert is None:
-        return None, "JSON field should_alert must be boolean"
+    # issue_detected(신규) 우선, should_alert(구 필드명)도 하위호환으로 허용.
+    raw_flag = candidate.get("issue_detected")
+    if raw_flag is None:
+        raw_flag = candidate.get("should_alert")
+    issue_detected = _coerce_bool(raw_flag)
+    if issue_detected is None:
+        return None, "JSON field issue_detected must be boolean"
 
     content = candidate.get("content")
     if content is None:
@@ -877,7 +878,7 @@ def normalize_judge_response(candidate: dict[str, Any] | None) -> tuple[dict[str
 
     return (
         {
-            "should_alert": should_alert,
+            "issue_detected": issue_detected,
             "content": content_text,
             "evidence_message_ids": evidence_ids,
         },
@@ -1014,23 +1015,81 @@ def judge_messages(messages: list[Any]) -> LocalJudgeResult:
 # =========================
 
 VERIFY_SYSTEM_PROMPT = """
-너는 모바일 게임 운영 알림의 2차 정밀 검증기다. 1차 로컬 필터가 alert로 올린 건이
-운영자에게 즉시 알릴 진짜 이슈인지 재검증한다.
+너는 모바일 게임 운영 이슈의 정밀 분석기다. 아래 채팅 메시지를 처음부터 독립적으로 분석해,
+운영자에게 즉시 알릴 진짜 이슈인지 판단하고 카테고리를 분류한다.
+다른 필터가 너를 호출했을 뿐이며, 그 필터의 분류·판단은 너에게 전달되지 않는다.
+선입견 없이 오직 아래 raw 메시지만으로 판단하라.
 반드시 유효한 JSON 객체 1개만 출력한다.
-허용 필드는 confirmed(boolean), reason(한국어 한 줄), reporter_message_ids(정수 배열), evidence_message_ids(정수 배열) 4개뿐이다.
+허용 필드는 category(문자열), confirmed(boolean), reason(한국어 한 줄), reporter_message_ids(정수 배열), evidence_message_ids(정수 배열) 5개뿐이다.
 마크다운·설명·추가 필드 금지.
 """.strip()
 
 VERIFY_USER_TEMPLATE = """
-1차 로컬 필터가 아래 메시지들을 [{category}]로 분류하고 alert(should_alert=true)로 올렸다.
-1차 판정 요약: {local_content}
+아래 채팅 메시지를 운영 이슈 관점에서 처음부터 독립적으로 분석하라. 외부 힌트는 없다.
 
-이것이 운영자에게 즉시 알릴 진짜 이슈인지 재검증하라.
+== 소스 구분 ==
+각 메시지의 source_id로 소스를 구분한다(모두 동일 게임에 대한 채팅이다):
+- `ingame` = 인게임 채팅(게임 안에서 직접 보고 말함, 사진 첨부 불가).
+- `kakao_`로 시작(kakao_a, kakao_b …) = 서로 분리된 외부 채팅 커뮤니티 방(사진 첨부 가능).
+신고자 카운팅은 방(source_id)이 아니라 작성자(sender) 기준으로만 한다(같은 작성자가 여러 방에 있어도 1명).
+
+== 1단계: 카테고리 분류 ==
+메시지를 직접 보고 올바른 카테고리를 `category` 필드에 출력하라.
+정규 카테고리: `서버/접속 장애` / `결제 문제` / `계정/운영 리스크` / `핵 신고` / `해당없음`
+
+- [서버/접속 장애]: 접속 불가, 로그인 불가, 무한 로딩, 반복 튕김, 앱 크래시, 서버 전체 장애,
+  점검 종료 후 다수 접속 불가, 점검 외 시간 갑작스런 접속 장애.
+- [결제 문제]: 결제 완료 후 상품/재화 미지급, 중복 결제. 상품 종류(시즌패스/월정액/스타터팩 등)와
+  무관하게 "결제 후 미지급"은 모두 같은 1개 유형이다.
+- [계정/운영 리스크]: (계정 문제) 재화/아이템 소실·계정 롤백·데이터 초기화·계정 접근 이상,
+  또는 (운영 리스크) 버그 악용·비정상 재화 획득·복사/중복 지급·이벤트·보상 전체 오지급·시스템 기능 오류.
+  content에 "세부 유형: 계정 문제/운영 리스크/혼합"을 명시한다.
+- [핵 신고]: 타 유저의 핵·매크로·외부 불법 프로그램 사용을 지금 목격·신고·의심하는 현재형 발화.
+- [해당없음]: 위 4개 이슈 신호가 없음.
+
+다음은 신고가 아니라 일반 대화이므로 [해당없음] 쪽이다(이슈로 분류하지 마라):
+- "현질 효율 낮음", "패스 가성비 별로" → 결제 만족도 평가
+- "다이아/골드 부족" → 보유량 한탄(소실 아님)
+- "확률 너무 낮음", "0.x%에서 못 깸" → 확률 결과 불만
+- "○○ 못넘어가/막혀있음", "스테 못밀었음" → 진행 실패
+- "명중만 올리면 다컨", "○경도 안 됨" → 스펙 부족 한탄
+- "핵있었나보네", "핵쟁이 극혐" → 핵 사후 푸념(능동 신고 아님)
+- 예정된 점검 중 "접속 안 됨/점검 중/기다리자" 대화
+공지/봇 자동 안내(구조화된 긴 글, "공지·점검·안내·보상 지급" 키워드 포함, 단발 정보성 메시지)는
+사용자 신고가 아니다 — 배경 정보로만 쓰고 신고로 세지 마라.
+
+== 2단계: 유효 신고 판별 ==
+이것이 운영자에게 즉시 알릴 진짜 이슈인지 정밀 판단하라.
+
+[유효 신고의 핵심 원칙]
+작성자가 "본인이 직접 겪거나 · 직접 시도하다 이상을 만나거나 · 직접 목격/의문을 제기한" 경우만 유효 신고다.
+- 직접 피해: "○○ 사라짐/초기화됨/안 들어옴"
+- 직접 시도 실패: "저도 안 들어가져요"(직접 접속 시도), "구매가 안 되네"(직접 구매 시도)
+- 직접 목격·의문(본인 피해 표현이 없어도): 기능/상점/시스템이 이상하게 동작함을 직접 보고 언급·질문
+  ("~가 이상하게 떠있네", "이거 왜 이러지?", "버그인가?", "원래 이래?")
+반대로, **본인 경험 표명 없이** 남의 글·사진에 보내는 단순 감탄·반응("헐 대박", "헉 진짜요?", "그러게요")이나
+제3자 대리 언급은 신고로 세지 않는다.
+- 단, "나도/저도" 등 본인의 같은 경험·상태가 함께 드러나면 감탄이 붙어도 유효다("헐 나도 안돼", "헐 저도 이상함").
+- 감탄·반응만 있고 본인 경험이 모호하면("헐 이상하네") 그 작성자의 다른 메시지 맥락을 보고 본인 경험 여부를 판단한다.
+
+[소스 보정]
+- 인게임(`ingame`) 메시지: 게임 안에서 직접 보므로, 동조성 신고("나도 안 돼")는 물론
+  이상 현상을 보고 던지는 짧은 반응·의문("머임 저거", "이거 뭐지", "9천다야?")도 직접 목격으로 폭넓게 인정한다.
+- 카카오(`kakao_*`) 메시지: 사진·남의 글에 대한 반응이 섞이므로, 본인의 직접 경험·시도·관찰이 드러나야 유효다
+  ("저도 안돼"=본인 경험, "헐 저도 이상함"=감탄+본인 경험 → 유효). 본인 경험 표명 없는 단순 감탄·반응만이면 제외하되,
+  애매하면 그 작성자의 다른 메시지로 맥락을 확인한다.
+
+[현재 상태(시제) 판단]
+시제가 과거·추정형이어도 본인이 직접 겪은 피해이고 그 상태가 현재 미해소(복구·정상화 언급 없음)면
+유효 신고로 센다("세번 초기화당함", "안 받고 껐더니 없어졌나봐요"). 단 본인이 "지금은 정상/복구됨"이라
+밝혔으면 제외한다.
+
 아래에 해당하는 발화는 신고로 세지 않는다(제외):
 - 남에 대한 대리 언급(본인 피해가 아니라 제3자 상태를 말함: "○○님 ~안 됐대?", "○○님 점수 누적 안 됐나봐")
   단, 본인이 직접 겪은 피해를 질문 형태로 말한 것("저 ○○ 안 됐는데 버그인가요?")은 신고로 센다.
 - 본인 정상 진술·반대("난 왜 안 그러지", "나는 됨")
-- 방치 후 발견·과거·이미 해소("자고왔더니 ~있더라", "아까 그랬다", "지금은 됨")
+- 이미 해소("지금은 됨/복구됨")거나, 본인 피해와 무관한 순수 과거 일화(현재 상태에 영향 없음).
+  (단 본인 피해가 현재도 미해소면 위 [현재 상태] 규칙대로 유효)
 - 누적 빈도·경향 표현("요근래·최근·요즘·자주·종종·가끔 ~한다/그런다")만 있는 발화.
   (단 "지금·방금·또·자꾸" 같은 '이 순간/이 접속'의 현재 표현이면 신고로 센다.
    "요즘들어·최근 등 기간 표현 + 잘/자주 튕겨"처럼 과거부터 이어진 경향은,
@@ -1040,6 +1099,7 @@ VERIFY_USER_TEMPLATE = """
    시제가 드러나지 않은 일반 진술("튕겨요", "안 돼요")은 제외하지 말 것.)
 - 정상 사양 설명·타인 안내("원래 그래요")
 - 난이도·확률·단순 불만
+- [핵 신고] 시: 과거·전언·사후 푸념("핵있었나보네", "핵쟁이 극혐")은 제외. 지금 목격·의심만 신고로 센다.
 
 위 제외는 "해당 메시지 1건"에만 적용한다(작성자 전체를 제외하지 말 것).
 같은 작성자라도 다른 메시지에서 현재 진행형으로 신고했거나, 다른 작성자의 유효 신고가 있으면
@@ -1047,7 +1107,8 @@ VERIFY_USER_TEMPLATE = """
 A는 현재 신고자로 카운트한다.
 
 본인이 지금 직접 겪은 동일 이슈를 서로 다른 사용자가 임계 인원 이상
-([서버/접속 장애]·[계정/운영 리스크] 2명, [결제 문제] 3명) 신고했을 때만 confirmed=true.
+([서버/접속 장애] {min_outage}명, [계정/운영 리스크] {min_risk}명, [결제 문제] {min_payment}명, [핵 신고] {min_cheat}명)
+신고했을 때만 confirmed=true.
 제외 후 남은 유효 신고 메시지의 고유 작성자 수로 임계를 판단한다. 미달하거나 애매하면 confirmed=false.
 
 confirmed=true이면, 임계 판단에서 신고자로 카운트한 본인 현재형 신고 메시지의 idx를 reporter_message_ids 배열에 담아라.
@@ -1068,18 +1129,22 @@ VERIFY_RESPONSE_SCHEMA = {
         "reason": {"type": "string"},
         "reporter_message_ids": {"type": "array", "items": {"type": "integer"}},
         "evidence_message_ids": {"type": "array", "items": {"type": "integer"}},
+        "category": {"type": "string"},
     },
-    "required": ["confirmed", "reason", "reporter_message_ids", "evidence_message_ids"],
+    "required": ["confirmed", "reason", "reporter_message_ids", "evidence_message_ids", "category"],
     "additionalProperties": False,
 }
 
 
 def verify_alert_cloud(
     messages: Iterable[Any],
-    category: str,
-    local_content: str,
+    category: str | None = None,
+    local_content: str | None = None,
 ) -> dict[str, Any]:
     """OpenAI 2차 정밀 검증. 1차(로컬)와 독립적으로 provider를 openai로 고정.
+
+    원점 판단(2026-06-18~): 1차 분류·content를 프롬프트에 주입하지 않는다(prime 제거).
+    `category`/`local_content` 인자는 호출부 호환을 위해 유지하나 프롬프트에 사용하지 않는다.
 
     반환 dict: status, confirmed(bool|None), reason, prompt_tokens, completion_tokens,
     total_tokens, error.
@@ -1092,6 +1157,7 @@ def verify_alert_cloud(
         "reason": "",
         "reporter_message_ids": [],
         "evidence_message_ids": [],
+        "category": None,
         "thinking": "",
         "reasoning_tokens": None,
         "prompt_tokens": None,
@@ -1115,10 +1181,15 @@ def verify_alert_cloud(
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    # 2차는 confirmed(base 임계) 판단만 한다. A채널 라우팅 임계는 Python(main.py)이 재카운트로
+    # 적용하므로 프롬프트에 주입하지 않는다(LLM이 A 라우팅을 판단하지 않음).
+    m = config.SLACK_CHANNEL_MIN_REPORTERS
     user_prompt = VERIFY_USER_TEMPLATE.format(
-        category=category or "unknown",
-        local_content=(local_content or "")[:300],
         payload=payload,
+        min_outage=m.get("서버/접속 장애", 2),
+        min_risk=m.get("계정/운영 리스크", 2),
+        min_payment=m.get("결제 문제", 3),
+        min_cheat=m.get("핵 신고", 3),
     )
 
     endpoint = str(getattr(config, "OPENAI_ENDPOINT", "") or "https://api.openai.com")
@@ -1182,10 +1253,22 @@ def verify_alert_cloud(
         result["error"] = str(data["error"])[:300]
         return result
 
+    result["raw_api_json"] = data
     choices = data.get("choices") or []
     msg = (choices[0].get("message") if choices else {}) or {}
     content = str(msg.get("content") or "")
-    result["thinking"] = str(msg.get("reasoning_content") or "")
+    # reasoning_content: o1/o3. thinking: GPT-5.4 계열. content 배열에 thinking 블록으로 오는 경우도 처리.
+    _thinking = msg.get("reasoning_content") or msg.get("thinking") or ""
+    if not _thinking and isinstance(msg.get("content"), list):
+        for blk in msg["content"]:
+            if isinstance(blk, dict) and blk.get("type") == "thinking":
+                _thinking = blk.get("thinking") or blk.get("text") or ""
+                break
+        content = " ".join(
+            blk.get("text", "") for blk in msg["content"]
+            if isinstance(blk, dict) and blk.get("type") != "thinking"
+        )
+    result["thinking"] = str(_thinking)
     usage = data.get("usage") or {}
     if isinstance(usage, dict):
         result["prompt_tokens"] = usage.get("prompt_tokens")
@@ -1219,6 +1302,7 @@ def verify_alert_cloud(
             except (TypeError, ValueError):
                 continue
     result["evidence_message_ids"] = ev_ids
+    result["category"] = str(parsed.get("category") or "")
     return result
 
 
@@ -1357,10 +1441,10 @@ def _safe_print(text: str) -> None:
         print(text.encode(enc, errors="replace").decode(enc))
 
 
-def print_llm_response(text: str, *, should_alert: bool = False) -> None:
+def print_llm_response(text: str, *, issue_detected: bool = False) -> None:
     line = "=" * 80
     if config.LLM_RESPONSE_GREEN_OUTPUT:
-        color = chr(27) + ("[91m" if should_alert else "[92m")
+        color = chr(27) + ("[91m" if issue_detected else "[92m")
         reset = chr(27) + "[0m"
         print(f"{color}{line}")
         print(f"[LLM RESPONSE] {active_llm_model_name()}")

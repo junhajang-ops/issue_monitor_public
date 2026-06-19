@@ -165,7 +165,7 @@ def handle_payload(payload: dict) -> str:
             clear_alert_snooze(user_label=str(user_label))
             feedback_text = (
                 ":bell: alert 음소거를 해제했습니다. "
-                "이제 should_alert=true 알림이 다시 전송됩니다."
+                "이제 알림이 다시 전송됩니다."
             )
             feedback_thread = threading.Thread(
                 target=_post_response_url,

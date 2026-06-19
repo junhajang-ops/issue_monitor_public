@@ -42,7 +42,7 @@ from llm.judge import detect_issue_candidates, matched_issue_keywords  # noqa: E
 
 SNAP = config.SNAPSHOT_DIR
 RUNID_RE = re.compile(r"^\d{8}_\d{6}$")
-SA_RE = re.compile(r'"should_alert"\s*:\s*(true|false)')
+SA_RE = re.compile(r'"(?:issue_detected|should_alert)"\s*:\s*(true|false)')
 
 
 def _should_alert(raw_response: str | None):

@@ -27,7 +27,7 @@ SQLite, **활성 테이블 2개**: `local_llm_runs`(사이클 판정 이력)·`m
 ### 1차 판정
 | 컬럼 | 타입 | 설명 |
 |------|------|------|
-| `has_possible_issue` | INTEGER | 1차 `should_alert` 결과(1=alert, 0=아님, NULL=판정불가). 키워드 게이트 override 반영 |
+| `has_possible_issue` | INTEGER | 1차 `issue_detected` 결과(1=이슈 신호, 0=아님, NULL=판정불가). 구 필드명 `should_alert` 하위호환. 키워드 게이트 override 반영 |
 
 ### 1차 원문/토큰
 | 컬럼 | 타입 | 설명 |
@@ -47,7 +47,7 @@ SQLite, **활성 테이블 2개**: `local_llm_runs`(사이클 판정 이력)·`m
 ### 2차 검증(OpenAI) 결과
 | 컬럼 | 타입 | 설명 |
 |------|------|------|
-| `cloud_verify_status` | TEXT | 2차 호출 상태: `ok`/`no_key`/`error`/`parse_error`/`skipped_provider`. **NULL이면 2차 미호출**(1차 alert·게이트 미통과) |
+| `cloud_verify_status` | TEXT | 2차 호출 상태: `ok`/`no_key`/`error`/`parse_error`/`skipped_provider`. **NULL이면 2차 미호출**(1차 issue_detected·게이트 미통과). `error`/`parse_error`는 2차 미응답 → 발송 차단(fallback 없음, 기록만) |
 | `cloud_verified` | INTEGER | 2차 최종 판정: 1=confirmed(발송), 0=rejected(차단), NULL=2차 미호출/비정상 |
 | `cloud_verify_reason` | TEXT | 2차 판정 사유(한국어 한 줄). 당시 신고자 수 등 근거 서술 — **사후 분석에 매우 유용** |
 | `cloud_prompt_tokens` | INTEGER | 2차 프롬프트 토큰 |

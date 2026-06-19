@@ -297,7 +297,7 @@ def insert_local_llm_run(
     if has_possible_issue_override is not None:
         has_possible_issue_int = 1 if has_possible_issue_override else 0
     else:
-        has_possible_issue = parsed.get("should_alert")
+        has_possible_issue = parsed.get("issue_detected", parsed.get("should_alert"))
         if has_possible_issue is None:
             has_possible_issue_int = None
         else:

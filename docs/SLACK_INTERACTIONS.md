@@ -1,6 +1,6 @@
 # Slack 음소거 인터랙션 설정
 
-`should_alert=true` Slack 메시지에는 1단계 버튼이 함께 발송됩니다.
+ALERT(알림) Slack 메시지에는 1단계 버튼이 함께 발송됩니다.
 
 1단계:
 
@@ -23,7 +23,7 @@
 1. Slack이 **Socket Mode(웹소켓)**로 클릭 이벤트를 이 프로젝트에 전달합니다.
 2. 프로젝트가 이벤트를 처리합니다.
 3. `음소거`를 누르면 시간 선택 버튼을 Slack에 다시 보냅니다.
-4. 시간을 선택하면 해당 시간만큼 `should_alert=true` 알림을 중지합니다.
+4. 시간을 선택하면 해당 시간만큼 ALERT(알림) 메시지를 중지합니다.
 5. `음소거 해제`를 누르면 저장된 음소거 상태를 즉시 삭제합니다.
 6. 음소거 시간이 끝나면 `alert 알림 중지가 종료되어 재개되었습니다` 메시지를 보냅니다.
 
@@ -60,6 +60,6 @@ python main.py
 
 - `SLACK_INTERACTIONS_ENABLED=0`이면 버튼이 메시지에 보이더라도 클릭 처리는 되지 않습니다.
 - `SLACK_APP_TOKEN`(`xapp-`)이 비어 있으면 Socket Mode 클라이언트가 시작되지 않습니다.
-- 음소거는 `should_alert=true` 메시지만 막습니다. `SLACK_NOTIFY_ALL=1` 상태에서는 false 임시 알림은 계속 전송될 수 있습니다.
+- 음소거는 ALERT(알림) 메시지만 막습니다. `SLACK_NOTIFY_ALL=1` 상태에서는 비알림(임시) 메시지는 계속 전송될 수 있습니다.
 - 운영 루프는 프로세스가 계속 살아 있으므로 음소거 종료 시 재개 메시지가 정상 동작합니다.
 - (레거시) HTTP 방식은 `SLACK_INTERACTION_MODE=http` + `SLACK_SIGNING_SECRET` + 공개 URL로도 동작하지만, 기본·권장은 Socket Mode입니다.

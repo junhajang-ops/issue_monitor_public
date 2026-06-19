@@ -190,7 +190,8 @@ ANTHROPIC_MAX_TOKENS = int(os.getenv("ANTHROPIC_MAX_TOKENS", str(LLM_NUM_PREDICT
 # 하이브리드 2차 검증 (로컬 1차 alert 시 클라우드 재검증)
 # =========================
 
-# 2차 검증 활성화. 1(기본)이면 로컬 should_alert=true 시 클라우드로 재검증한다.
+# 2차 검증 활성화. 1(기본)이면 1차 issue_detected=true(또는 키워드 게이트) 시 클라우드로 재검증한다.
+# 주의: 0이면 2차 미수행 → (fallback 제거됨) 어떤 것도 발송되지 않는다.
 VERIFY_ENABLED = os.getenv("VERIFY_ENABLED", "1") == "1"
 # 2차 검증 provider (현재 openai 지원). LLM_PROVIDER(1차)와 독립.
 VERIFY_PROVIDER = os.getenv("VERIFY_PROVIDER", "openai").strip().lower()
@@ -213,13 +214,28 @@ SLACK_INTERACTION_MODE = os.getenv("SLACK_INTERACTION_MODE", "socket").strip().l
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
 SLACK_SNOOZE_MINUTES = int(os.getenv("SLACK_SNOOZE_MINUTES", "10"))
 
-# Bot Token 방식 (should_alert=True 시 chat.postMessage + thread evidence)
+# Bot Token 방식 (발송 시 chat.postMessage + thread evidence)
 # 미설정 시 기존 Webhook 흐름 사용 (스레드 evidence 비활성).
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "")
 SLACK_CHANNEL_A = os.getenv("SLACK_CHANNEL_A", "")
 # A 채널(추가 전송) 발송 최소 고유 신고자 수(2차 confirmed 시). reload 대상.
 SLACK_CHANNEL_A_MIN_REPORTERS = int(os.getenv("SLACK_CHANNEL_A_MIN_REPORTERS", "4"))
+# 카테고리별 신고자 임계 (기본 채널 / 추가 채널). 키 = 정규 카테고리 문자열. reload 대상.
+# 기본값 = 현 동작 보존: 기본채널(장애·리스크 2, 결제·핵 3), 추가채널(기존 flat 4, 핵 5).
+_a_default = os.getenv("SLACK_CHANNEL_A_MIN_REPORTERS", "4")
+SLACK_CHANNEL_MIN_REPORTERS = {
+    "서버/접속 장애":   int(os.getenv("SLACK_CHANNEL_MIN_OUTAGE",   "2")),
+    "계정/운영 리스크": int(os.getenv("SLACK_CHANNEL_MIN_RISK",      "2")),
+    "결제 문제":        int(os.getenv("SLACK_CHANNEL_MIN_PAYMENT",   "3")),
+    "핵 신고":          int(os.getenv("SLACK_CHANNEL_MIN_CHEAT",     "3")),
+}
+SLACK_CHANNEL_A_MIN_REPORTERS_BY_CAT = {
+    "서버/접속 장애":   int(os.getenv("SLACK_CHANNEL_A_MIN_OUTAGE",   _a_default)),
+    "계정/운영 리스크": int(os.getenv("SLACK_CHANNEL_A_MIN_RISK",      _a_default)),
+    "결제 문제":        int(os.getenv("SLACK_CHANNEL_A_MIN_PAYMENT",   _a_default)),
+    "핵 신고":          int(os.getenv("SLACK_CHANNEL_A_MIN_CHEAT",     "5")),
+}
 SLACK_EVIDENCE_MAX_PER_SOURCE = int(os.getenv("SLACK_EVIDENCE_MAX_PER_SOURCE", "20"))
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -232,6 +248,16 @@ CANDIDATE_SCORE_THRESHOLD = float(os.getenv("CANDIDATE_SCORE_THRESHOLD", "0.50")
 FINAL_CONFIDENCE_THRESHOLD = float(os.getenv("FINAL_CONFIDENCE_THRESHOLD", "0.70"))
 
 ALERT_MIN_SEVERITY = os.getenv("ALERT_MIN_SEVERITY", "medium")
+
+
+def min_reporters_base(category: str) -> int:
+    """카테고리별 기본 채널 신고자 임계. 미상 카테고리는 2 fallback."""
+    return SLACK_CHANNEL_MIN_REPORTERS.get(category, 2)
+
+
+def min_reporters_a(category: str) -> int:
+    """카테고리별 추가(A) 채널 신고자 임계. 미상 카테고리는 SLACK_CHANNEL_A_MIN_REPORTERS fallback."""
+    return SLACK_CHANNEL_A_MIN_REPORTERS_BY_CAT.get(category, SLACK_CHANNEL_A_MIN_REPORTERS)
 
 
 # =========================
@@ -249,6 +275,7 @@ _RELOADABLE_KEYS = (
     "LLM_PRESENCE_PENALTY", "LLM_RESPONSE_GREEN_OUTPUT", "SLACK_ALERT_ENABLED",
     "SLACK_NOTIFY_ALL", "SLACK_NOTIFY_TESTS", "SLACK_TEMP_TO_A", "SLACK_INTERACTIONS_ENABLED",
     "SLACK_CHANNEL", "SLACK_CHANNEL_A", "SLACK_CHANNEL_A_MIN_REPORTERS",
+    "SLACK_CHANNEL_MIN_REPORTERS", "SLACK_CHANNEL_A_MIN_REPORTERS_BY_CAT",
     "SLACK_EVIDENCE_MAX_PER_SOURCE",
 )
 
@@ -267,6 +294,7 @@ def reload_config() -> dict:
     global LLM_PRESENCE_PENALTY, LLM_RESPONSE_GREEN_OUTPUT, SLACK_ALERT_ENABLED
     global SLACK_NOTIFY_ALL, SLACK_NOTIFY_TESTS, SLACK_TEMP_TO_A, SLACK_INTERACTIONS_ENABLED
     global SLACK_CHANNEL, SLACK_CHANNEL_A, SLACK_CHANNEL_A_MIN_REPORTERS
+    global SLACK_CHANNEL_MIN_REPORTERS, SLACK_CHANNEL_A_MIN_REPORTERS_BY_CAT
     global SLACK_EVIDENCE_MAX_PER_SOURCE
 
     load_dotenv(override=True)
@@ -296,6 +324,19 @@ def reload_config() -> dict:
     SLACK_CHANNEL = os.getenv("SLACK_CHANNEL", "")
     SLACK_CHANNEL_A = os.getenv("SLACK_CHANNEL_A", "")
     SLACK_CHANNEL_A_MIN_REPORTERS = int(os.getenv("SLACK_CHANNEL_A_MIN_REPORTERS", "4"))
+    _a_default = os.getenv("SLACK_CHANNEL_A_MIN_REPORTERS", "4")
+    SLACK_CHANNEL_MIN_REPORTERS = {
+        "서버/접속 장애":   int(os.getenv("SLACK_CHANNEL_MIN_OUTAGE",   "2")),
+        "계정/운영 리스크": int(os.getenv("SLACK_CHANNEL_MIN_RISK",      "2")),
+        "결제 문제":        int(os.getenv("SLACK_CHANNEL_MIN_PAYMENT",   "3")),
+        "핵 신고":          int(os.getenv("SLACK_CHANNEL_MIN_CHEAT",     "3")),
+    }
+    SLACK_CHANNEL_A_MIN_REPORTERS_BY_CAT = {
+        "서버/접속 장애":   int(os.getenv("SLACK_CHANNEL_A_MIN_OUTAGE",   _a_default)),
+        "계정/운영 리스크": int(os.getenv("SLACK_CHANNEL_A_MIN_RISK",      _a_default)),
+        "결제 문제":        int(os.getenv("SLACK_CHANNEL_A_MIN_PAYMENT",   _a_default)),
+        "핵 신고":          int(os.getenv("SLACK_CHANNEL_A_MIN_CHEAT",     "5")),
+    }
     SLACK_EVIDENCE_MAX_PER_SOURCE = int(os.getenv("SLACK_EVIDENCE_MAX_PER_SOURCE", "20"))
 
     return {k: globals()[k] for k in _RELOADABLE_KEYS}

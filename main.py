@@ -91,6 +91,7 @@ def _parse_alert_category(parsed: dict[str, Any] | None) -> str:
         "계정/운영 리스크",
         "서버/접속 장애",
         "결제 문제",
+        "핵 신고",
         "계정 문제",
         "운영 리스크",
         "일반 대화",
@@ -262,12 +263,13 @@ def run_cycle(replay_run_id: str | None = None) -> float:
         display_text = format_response_for_display(judge_result)
         storage_text = format_response_for_storage(judge_result)
         parsed = judge_result.parsed_response or {}
-        should_alert = bool(parsed.get("should_alert", False))
+        issue_detected = bool(parsed.get("issue_detected", False))
         current_category = _parse_alert_category(parsed)
+        vcat = current_category  # 2차 재분류 결과로 갱신됨 (없으면 1차 유지)
         # 키워드 게이트: 확인된 이슈 키워드가 '신규(is_new)' 메시지에 하나라도 있으면
         # 9B 판정과 무관하게 2차로 넘긴다(recall). 키워드 후보가 모두 이전 사이클에
         # 본 메시지(is_new=0)면 게이트 미통과 → 같은 신고 중복 2차 호출/발송 방지.
-        # (로컬 9B should_alert 경로는 기존 동작 그대로 유지)
+        # (로컬 9B issue_detected 경로와 키워드 게이트가 OR로 2차 호출을 트리거)
         _issue_cands = detect_issue_candidates(recent_rows)
         keyword_sender_count = len({s for _, s in _issue_cands if s})
         _issue_cand_idx = {i for i, _ in _issue_cands}
@@ -275,7 +277,7 @@ def run_cycle(replay_run_id: str | None = None) -> float:
             (i in _issue_cand_idx) and _is_new_row(row)
             for i, row in enumerate(recent_rows, start=1)
         )
-        print_llm_response(display_text, should_alert=should_alert)
+        print_llm_response(display_text, issue_detected=issue_detected)
         print(
             f"[LLM] status={judge_result.status}, "
             f"elapsed_sec={judge_result.elapsed_sec:.2f}"
@@ -310,11 +312,13 @@ def run_cycle(replay_run_id: str | None = None) -> float:
             print(f"[VERIFY] evidence backfilled from keyword candidates: {sorted(cand_ids)}")
 
         # 단일 사이클 + 하이브리드 2차 검증.
-        # 로컬 1차 should_alert=true면 OpenAI 2차 검증으로 최종 확정.
-        slack_should_alert = should_alert
+        # 1차(issue_detected) 또는 키워드 게이트로 신호가 잡히면 OpenAI 2차 검증으로 최종 확정.
+        # 2차가 응답하지 않으면(오류/비활성/상한) 발송하지 않는다 — 1차 fallback 발송은 제거됨.
+        slack_should_alert = issue_detected
         send_slack = False
         has_possible_issue_override: bool | None = None
         cloud_verify: dict[str, Any] | None = None
+        reporter_count: int = 0
         decision_note = ""
 
         if judge_result.status != "ok":
@@ -327,11 +331,11 @@ def run_cycle(replay_run_id: str | None = None) -> float:
                 called=False, route="-", status=f"1차 비정상({judge_result.status})",
                 confirmed=None, detail="1차 LLM 응답이 비정상이라 2차 미호출, 차단",
             )
-        elif should_alert or keyword_gate:
-            # 호출 경로: 1차 9B가 직접 alert인지, 9B는 false인데 키워드 게이트로 강제 전달인지.
+        elif issue_detected or keyword_gate:
+            # 호출 경로: 1차 9B가 이슈 신호 감지인지, 9B는 false인데 키워드 게이트로 강제 전달인지.
             route = (
-                "1차 로컬(9B) alert"
-                if should_alert
+                "1차 로컬(9B) issue_detected"
+                if issue_detected
                 else f"키워드 게이트 강제(9B=false, 이슈키워드 {keyword_sender_count}명)"
             )
             keyword_hits = matched_issue_keywords(recent_rows)
@@ -339,39 +343,70 @@ def run_cycle(replay_run_id: str | None = None) -> float:
                 cloud_verify = verify_alert_cloud(recent_rows, current_category, slack_content)
                 cv_status = cloud_verify.get("status")
                 if cv_status == "ok":
+                    # 2차 카테고리 재분류 반영
+                    _cv_cat = str(cloud_verify.get("category") or "").strip()
+                    if _cv_cat in ("서버/접속 장애", "결제 문제", "계정/운영 리스크", "핵 신고"):
+                        vcat = _cv_cat
+
                     send_slack = bool(cloud_verify.get("confirmed"))
                     decision_note = "cloud_confirmed" if send_slack else "cloud_rejected"
                     # 게이트로만 통과(9B false)했는데 2차 confirmed면 9B의 false content 대신 2차 reason 사용.
-                    if send_slack and not should_alert:
+                    if send_slack and not issue_detected:
                         slack_content = str(cloud_verify.get("reason") or slack_content)
                         slack_should_alert = True
                         decision_note = "cloud_confirmed_via_keyword_gate"
+
+                    if send_slack:
+                        reporter_ev_ids = set(cloud_verify.get("reporter_message_ids") or [])
+                        reporter_rows = _rows_by_prompt_indices(recent_rows, reporter_ev_ids)
+                        reporter_count = _unique_sender_count(reporter_rows)
+                        cloud_ev_ids = set(cloud_verify.get("evidence_message_ids") or [])
+                        if cloud_ev_ids:
+                            cloud_evidence_rows = _rows_by_prompt_indices(recent_rows, cloud_ev_ids)
+                            if cloud_evidence_rows:
+                                evidence_rows = cloud_evidence_rows
+                                print(
+                                    f"[VERIFY] cloud re-selected evidence={sorted(cloud_ev_ids)}, "
+                                    f"matched_rows={len(evidence_rows)}"
+                                )
+                        print(
+                            f"[VERIFY] reporter_message_ids={sorted(reporter_ev_ids)}, "
+                            f"reporter_count={reporter_count}"
+                        )
+                        # 기본 채널 Python 교차검증: 임계 미달 시 발송 차단
+                        base_min = config.min_reporters_base(vcat)
+                        if reporter_count < base_min:
+                            send_slack = False
+                            decision_note = "cloud_confirmed_base_undercount"
+                            print(
+                                f"[VERIFY] base undercount: reporter_count={reporter_count} "
+                                f"< {base_min} (vcat={vcat})"
+                            )
+
                     _verify_log(
                         called=True, route=route, status="ok",
                         confirmed=send_slack, detail=str(cloud_verify.get("reason") or ""),
                         keywords=keyword_hits,
                     )
                 else:
-                    # 2차 장애/키없음/파싱실패 → 로컬 판정대로 발송(recall 우선).
-                    send_slack = True
-                    decision_note = f"cloud_fallback_{cv_status}"
-                    if not should_alert:
-                        slack_should_alert = True
-                        decision_note = f"cloud_fallback_{cv_status}_keyword_gate"
+                    # 2차 미응답(장애/키없음/파싱실패) → 발송하지 않는다(1차 fallback 제거).
+                    # 2차 오류는 cloud_verify(status/error)에 담겨 DB(cloud_verify_status·cloud_raw_json)에 기록된다.
+                    send_slack = False
+                    slack_should_alert = False
+                    decision_note = f"cloud_error_{cv_status}_blocked"
                     _verify_log(
                         called=True, route=route, status=cv_status, confirmed=None,
-                        detail=f"2차 장애 → 1차 판정대로 발송(fallback): {str(cloud_verify.get('error'))[:160]}",
+                        detail=f"2차 미응답 → 차단(fallback 제거), DB 기록: {str(cloud_verify.get('error'))[:160]}",
                         keywords=keyword_hits,
                     )
             else:
-                # 검증 비활성 또는 일일 상한 초과 → 로컬 판정대로.
-                send_slack = True
-                decision_note = "verify_disabled_or_daily_limit"
-                if not should_alert:
-                    slack_should_alert = True
+                # 2차 비활성 또는 일일 상한 초과 → 발송하지 않는다(1차 fallback 제거).
+                send_slack = False
+                slack_should_alert = False
+                decision_note = "verify_disabled_or_daily_limit_blocked"
                 _verify_log(
                     called=False, route=route, status="skipped", confirmed=None,
-                    detail="2차 비활성 또는 일일 상한 초과 → 1차 판정대로 발송",
+                    detail="2차 비활성 또는 일일 상한 초과 → 차단(fallback 제거)",
                     keywords=keyword_hits,
                 )
         else:
@@ -379,41 +414,15 @@ def run_cycle(replay_run_id: str | None = None) -> float:
             decision_note = "local_no_alert"
             _verify_log(
                 called=False, route="-", status="not_alert", confirmed=None,
-                detail="1차 should_alert=false & 키워드 게이트 미통과 → 2차 미호출",
+                detail="1차 issue_detected=false & 키워드 게이트 미통과 → 2차 미호출",
             )
-
-        # 2차(클라우드) confirmed 시, 2차가 전체 맥락을 보고 재선정한 evidence를 우선 사용.
-        # (1차 로컬 9B는 evidence를 빈약/불안정하게 고르는 경향) 없으면 1차 evidence 유지.
-        if (
-            cloud_verify is not None
-            and cloud_verify.get("status") == "ok"
-            and bool(cloud_verify.get("confirmed"))
-        ):
-            reporter_ev_ids = set(cloud_verify.get("reporter_message_ids") or [])
-            reporter_rows = _rows_by_prompt_indices(recent_rows, reporter_ev_ids)
-            reporter_count = _unique_sender_count(reporter_rows)
-            cloud_ev_ids = set(cloud_verify.get("evidence_message_ids") or [])
-            if cloud_ev_ids:
-                cloud_evidence_rows = _rows_by_prompt_indices(recent_rows, cloud_ev_ids)
-                if cloud_evidence_rows:
-                    evidence_rows = cloud_evidence_rows
-                    print(
-                        f"[VERIFY] cloud re-selected evidence={sorted(cloud_ev_ids)}, "
-                        f"matched_rows={len(evidence_rows)}"
-                    )
-            print(
-                f"[VERIFY] reporter_message_ids={sorted(reporter_ev_ids)}, "
-                f"reporter_count={reporter_count}"
-            )
-        else:
-            reporter_count = 0
 
         slack_fields = {
             "run_id": run_id,
             "llm_elapsed_sec": judge_result.elapsed_sec,
             "analyzed_messages": len(recent_rows),
             "evidence_messages": len(evidence_rows),
-            "category": current_category or "unknown",
+            "category": vcat or "unknown",
             "decision": decision_note,
         }
         if cloud_verify is not None:
@@ -436,7 +445,7 @@ def run_cycle(replay_run_id: str | None = None) -> float:
                 cloud_verify is not None
                 and cloud_verify.get("status") == "ok"
                 and bool(cloud_verify.get("confirmed"))
-                and reporter_count >= config.SLACK_CHANNEL_A_MIN_REPORTERS
+                and reporter_count >= config.min_reporters_a(vcat)
             )
             if (
                 sent_b
@@ -482,10 +491,10 @@ def run_cycle(replay_run_id: str | None = None) -> float:
             print(
                 f"[SLACK] notify_all sent_b={str(sent_b).lower()} "
                 f"sent_a={str(sent_a).lower() if sent_a is not None else '-'} "
-                f"reason={decision_note} category={current_category}"
+                f"reason={decision_note} category={vcat}"
             )
         else:
-            print(f"[SLACK] skipped=true reason={decision_note} category={current_category}")
+            print(f"[SLACK] skipped=true reason={decision_note} category={vcat}")
 
         if replay_run_id:
             print("[REPLAY] DB 기록 생략(insert_local_llm_run 스킵 · 과거 run 보존)")

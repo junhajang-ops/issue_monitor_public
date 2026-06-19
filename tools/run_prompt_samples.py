@@ -274,7 +274,7 @@ def run_case(case_id: str, *, dry_run: bool, show_messages: bool) -> None:
     now = datetime.now(KST)
     result = judge_messages(messages)
     parsed = result.parsed_response or {}
-    should_alert = bool(parsed.get("should_alert", False))
+    should_alert = bool(parsed.get("issue_detected", parsed.get("should_alert", False)))
     category = _parse_alert_category(parsed)
     content = str(parsed.get("content") or result.error or "")
 
