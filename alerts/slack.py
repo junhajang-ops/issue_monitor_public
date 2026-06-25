@@ -250,6 +250,23 @@ def _send_evidence_thread(
             print(f"[SLACK] evidence post failed for source={source_id}")
 
 
+def send_alert_resume_notice(channel: str) -> bool:
+    """음소거 만료 시 '재개되었습니다' 통지를 지정 채널에만 Bot token으로 전송.
+
+    response_url(약 30분 후 만료)이 아니라 chat.postMessage를 써서
+    음소거 길이·프로세스 재시작과 무관하게 전송된다. 채널이 비면 보내지 않는다
+    (음소거 누른 채널로만 가야 하므로 기본 채널로 fallback하지 않는다).
+    """
+    if not channel:
+        return False
+    now_text = time.strftime("%Y-%m-%d %H:%M:%S KST", time.localtime())
+    ts = _post_chat_message(
+        channel=channel,
+        text=f":bell: [issue_monitor] alert 알림 중지가 종료되어 재개되었습니다. ({now_text})",
+    )
+    return ts is not None
+
+
 def send_slack_notification(
     *,
     title: str,

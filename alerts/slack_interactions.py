@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 import requests
 
 import config
-from alerts.slack_state import clear_alert_snooze, get_alert_snooze_until, set_alert_snooze
+from alerts.slack_state import clear_alert_snooze, set_alert_snooze
 
 MUTE_MENU_ACTION_ID = "issue_monitor_mute_menu"
 MUTE_DURATION_ACTION_ID = "issue_monitor_mute_duration"
@@ -106,24 +106,6 @@ def _duration_blocks() -> list[dict]:
     ]
 
 
-def _schedule_resume_message(response_url: str, until_iso: str) -> None:
-    def notify_resume() -> None:
-        until = get_alert_snooze_until()
-        if not until or until.isoformat() != until_iso:
-            return
-        now_text = datetime_now_label()
-        _post_response_url(
-            response_url,
-            f":bell: [issue_monitor] alert \uc54c\ub9bc \uc911\uc9c0\uac00 \uc885\ub8cc\ub418\uc5b4 \uc7ac\uac1c\ub418\uc5c8\uc2b5\ub2c8\ub2e4. ({now_text})",
-        )
-
-    until = get_alert_snooze_until()
-    delay = max(0, int((until.timestamp() - time.time()) if until else 0))
-    timer = threading.Timer(delay, notify_resume)
-    timer.daemon = True
-    timer.start()
-
-
 def datetime_now_label() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S KST", time.localtime())
 
@@ -181,7 +163,9 @@ def handle_payload(payload: dict) -> str:
             return "ignored"
 
         label, minutes = MUTE_OPTIONS[value]
-        until = set_alert_snooze(minutes=minutes, user_label=str(user_label))
+        # 재개 통지를 '음소거 누른 채널'로만 보내기 위해 channel id 저장(억제는 전역 유지).
+        channel_id = str((payload.get("channel") or {}).get("id") or "")
+        until = set_alert_snooze(minutes=minutes, user_label=str(user_label), channel_id=channel_id)
         feedback_text = (
             f":mute: {label}를 설정했습니다. "
             f"재개 예정: {until.strftime('%Y-%m-%d %H:%M:%S KST')}"
@@ -192,10 +176,11 @@ def handle_payload(payload: dict) -> str:
             daemon=True,
         )
         feedback_thread.start()
-        _schedule_resume_message(response_url, until.isoformat())
+        # 재개 통지는 영속 메인 루프(main.run_cycle)가 만료를 감지해 해당 채널로 전송한다.
+        # (기존 threading.Timer + response_url 방식은 response_url 30분 만료·재시작 취약으로 제거)
         print(
             "[SLACK INTERACTION] "
-            f"mute=true, snooze_minutes={minutes}, user={user_label}"
+            f"mute=true, snooze_minutes={minutes}, channel={channel_id}, user={user_label}"
         )
         return "ok"
     return "ignored"

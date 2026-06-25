@@ -44,12 +44,14 @@ def _write_state(state: dict[str, Any]) -> None:
             pass
 
 
-def set_alert_snooze(*, minutes: int, user_label: str = "") -> datetime:
+def set_alert_snooze(*, minutes: int, user_label: str = "", channel_id: str = "") -> datetime:
     now = datetime.now(KST)
     until = now + timedelta(minutes=minutes)
     state = _read_state()
     state["alert_snooze_until"] = to_iso_kst(until)
     state["alert_snooze_by"] = user_label
+    # 재개 통지를 '음소거 누른 그 채널'로만 보내기 위해 채널 id 저장(억제 자체는 전역).
+    state["alert_snooze_channel"] = channel_id
     state["alert_snooze_created_at"] = to_iso_kst(now)
     _write_state(state)
     return until
@@ -59,9 +61,39 @@ def clear_alert_snooze(*, user_label: str = "") -> None:
     state = _read_state()
     now = datetime.now(KST)
     state.pop("alert_snooze_until", None)
+    state.pop("alert_snooze_channel", None)
     state["alert_snooze_cleared_by"] = user_label
     state["alert_snooze_cleared_at"] = to_iso_kst(now)
     _write_state(state)
+
+
+def pop_expired_snooze() -> str | None:
+    """음소거가 만료됐으면 (재개 통지용) 채널 id를 1회 반환하고 만료 상태를 정리한다.
+
+    - 음소거 없음/아직 유효 → None.
+    - 만료 시 alert_snooze_until·channel을 제거(idempotent: 다음 호출은 None) → 1회만 통지.
+    - 저장된 채널이 없으면 상태만 정리하고 None(엉뚱한 채널 통지 방지).
+    영속 메인 루프가 매 사이클 호출 → 재시작·음소거 길이와 무관하게 정확히 1회.
+    """
+    state = _read_state()
+    until_val = state.get("alert_snooze_until")
+    if not until_val:
+        return None
+    try:
+        until = datetime.fromisoformat(str(until_val))
+    except ValueError:
+        state.pop("alert_snooze_until", None)
+        state.pop("alert_snooze_channel", None)
+        _write_state(state)
+        return None
+    if datetime.now(KST) < until:
+        return None  # 아직 음소거 중
+    channel = str(state.get("alert_snooze_channel") or "")
+    state.pop("alert_snooze_until", None)
+    state.pop("alert_snooze_channel", None)
+    state["alert_snooze_resumed_at"] = to_iso_kst(datetime.now(KST))
+    _write_state(state)
+    return channel or None
 
 
 def get_alert_snooze_until() -> datetime | None:

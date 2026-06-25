@@ -7,11 +7,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import config
-from alerts.slack import send_slack_notification
+from alerts.slack import send_alert_resume_notice, send_slack_notification
 from alerts.slack_interactions import (
     start_slack_interaction_server,
     start_socket_mode_client,
 )
+from alerts.slack_state import pop_expired_snooze
 from core.logging_setup import setup_file_logging
 from core.time_utils import KST, to_iso_kst
 from llm.judge import (
@@ -48,7 +49,11 @@ from storage.db import (
 def get_field(obj: Any, name: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(name, default)
-    return getattr(obj, name, default)
+    # sqlite3.Row 등 매핑형은 인덱스 접근만 지원(getattr 불가) → 인덱스 먼저 시도.
+    try:
+        return obj[name]
+    except (KeyError, IndexError, TypeError):
+        return getattr(obj, name, default)
 
 
 def _is_new_row(row: Any) -> bool:
@@ -182,6 +187,14 @@ def run_cycle(replay_run_id: str | None = None) -> float:
     # 키워드 파일(issue_keywords.txt) 변경을 재시작 없이 반영(매 사이클 재로드).
     _kw = reload_issue_keywords()
     print(f"[KEYWORDS] reloaded={len(_kw)} (file={config.ISSUE_KEYWORDS_FILE})")
+
+    # 음소거 만료 감지 → '재개되었습니다' 통지를 음소거 누른 채널로만 1회 전송.
+    # (영속 루프가 담당 → response_url 만료·프로세스 재시작과 무관. replay에선 생략.)
+    if not replay_run_id:
+        _resume_channel = pop_expired_snooze()
+        if _resume_channel:
+            _resumed = send_alert_resume_notice(_resume_channel)
+            print(f"[SLACK] alert resume notice sent={str(_resumed).lower()} channel={_resume_channel}")
 
     db_cutoff = now - timedelta(minutes=config.DB_MESSAGE_RETENTION_MINUTES)
     db_cutoff_iso = to_iso_kst(db_cutoff)
@@ -321,7 +334,16 @@ def run_cycle(replay_run_id: str | None = None) -> float:
         reporter_count: int = 0
         decision_note = ""
 
-        if judge_result.status != "ok":
+        if judge_result.status == "skipped_empty":
+            send_slack = False
+            slack_should_alert = False
+            has_possible_issue_override = False
+            decision_note = "skipped_empty"
+            _verify_log(
+                called=False, route="-", status="메시지 없음(skipped_empty)",
+                confirmed=None, detail="분석 대상 메시지가 없어 건너뜀",
+            )
+        elif judge_result.status != "ok":
             # 1차 판정을 신뢰할 수 없으면 차단.
             send_slack = False
             slack_should_alert = False
