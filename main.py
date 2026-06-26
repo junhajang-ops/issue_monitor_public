@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -372,6 +373,7 @@ def run_cycle(replay_run_id: str | None = None) -> float:
 
                     send_slack = bool(cloud_verify.get("confirmed"))
                     decision_note = "cloud_confirmed" if send_slack else "cloud_rejected"
+
                     # 게이트로만 통과(9B false)했는데 2차 confirmed면 9B의 false content 대신 2차 reason 사용.
                     if send_slack and not issue_detected:
                         slack_content = str(cloud_verify.get("reason") or slack_content)
@@ -404,6 +406,17 @@ def run_cycle(replay_run_id: str | None = None) -> float:
                                 f"[VERIFY] base undercount: reporter_count={reporter_count} "
                                 f"< {base_min} (vcat={vcat})"
                             )
+
+                    # Python 교차검증까지 통과해 최종 발송 확정된 경우 snapshots_true에 보존.
+                    if send_slack and not replay_run_id:
+                        _true_dst = config.SNAPSHOTS_TRUE_DIR / run_id
+                        if not _true_dst.exists():
+                            try:
+                                config.SNAPSHOTS_TRUE_DIR.mkdir(parents=True, exist_ok=True)
+                                shutil.copytree(str(snapshot.snapshot_root), str(_true_dst))
+                                print(f"[SNAPSHOT_TRUE] saved={_true_dst.name}")
+                            except Exception as _e:
+                                print(f"[SNAPSHOT_TRUE] copy failed: {_e}")
 
                     _verify_log(
                         called=True, route=route, status="ok",

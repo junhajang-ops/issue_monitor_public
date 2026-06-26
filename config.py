@@ -28,6 +28,7 @@ def _optional_float_env(name: str) -> float | None:
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
+SNAPSHOTS_TRUE_DIR = DATA_DIR / "snapshots_true"
 LOG_DIR = DATA_DIR / "logs"
 DB_PATH = DATA_DIR / "issue_monitor.sqlite3"
 

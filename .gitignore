@@ -8,6 +8,7 @@ local_llm_runs/
 __pycache__/
 *.pyc
 data/snapshots/
+data/snapshots_true/
 data/logs/
 .claude/
 *_out.txt
